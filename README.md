@@ -76,7 +76,7 @@ YCSB
 -enable_s3 \
 -flusher_thread=1 \
 -s3_bucket_names=[bucket_1, bucket_2] \
--optimize_dequeue=true \
+-optimize_dequeue=1 \
 -dependency_aware=0
 ```
 
@@ -107,6 +107,6 @@ TPC-C
 
 ## Logging optimization parameters
 * `-n_combine_log`: Specify the number of workers per log, n_combine_log = 2 means each log is shared by 2 workers
-* `-optimize_dequeue`: Dequeue transactions based on their maximum dependency CSN.
+* `-optimize_dequeue`: 0: Dequeue transactions based on their CSN. 1: Dequeue transactions based on their maximum dependency CSN. 2: Dequeue transactions based on their start timestamp.
 * `-dependency_aware`: Dequeue a transaction if it is the head of the queue and all of its **direct** predcessors are local. Also try to place the transaction's log records to the same log as its dependencies'.
 * `-enable_s3=1 -flusher_thread=1 -s3_bucket_names=[bucket_1, bucket_2]`: Using S3 Express One Zone for log storage.
