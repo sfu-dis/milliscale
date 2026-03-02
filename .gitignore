@@ -1,0 +1,3 @@
+.vscode/settings.json
+benchmarks/pyscript/__pycache__/benchmark_runner.cpython-312.pyc
+benchmarks/pyscript/__pycache__/custom_command.cpython-312.pyc

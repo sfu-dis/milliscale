@@ -1,0 +1,3 @@
+set_property(GLOBAL APPEND PROPERTY ALL_SRC
+  ${CMAKE_CURRENT_SOURCE_DIR}/mcs-lock.cpp
+)
