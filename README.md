@@ -3,6 +3,8 @@
 Milliscale is a high-performance database system optimised for object storage and main memory. 
 It offers low-latency, high throughput and low cost OLTP by leveraging low-latency object storage (AWS S3 Express One Zone) and in-memory and multicore optimisations.
 
+See more details in our technical report here: https://arxiv.org/pdf/2603.02108
+
 ## Environment configurations
 Step 1: Software dependencies
 * cmake
