@@ -11,14 +11,14 @@ namespace ermia {
 namespace dlog {
 
 struct log_record {
-  enum logrec_type {
+  enum logrec_type: uint8_t {
     INSERT,
     UPDATE,
     UPDATE_DELTA,
   };
 
-  logrec_type type;
-
+  logrec_type type : 8;
+  uint32_t rec_size : 24;
   FID fid;
   OID oid;
 
@@ -46,6 +46,7 @@ static uint32_t populate_log_record(log_record::logrec_type type,
 
   // Copy contents
   logrec->type = type;
+  logrec->rec_size = size;
   logrec->fid = fid;
   logrec->oid = oid;
   logrec->csn = block->csn;
