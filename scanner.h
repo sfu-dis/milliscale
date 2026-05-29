@@ -39,7 +39,7 @@ int32_t read_page_from_file(int fd, size_t page_size, size_t page_id, void* poin
     return bytes_read;
 }
 
-void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::function<void(FID, OID, uint64_t, uint32_t, char*)> callback) {
+void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::function<void(ermia::FID, ermia::OID, uint64_t, uint32_t, char*)> callback) {
     // No enough space for log block header
     if ((char*)block_ptr + sizeof(log_block) >= end_ptr) {
         return nullptr;
@@ -86,7 +86,7 @@ void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::f
     return (void*) (lb->payload + lb->capacity);
 }
 
-void parse_log_stream(int fd, std::function<void(FID, OID, uint64_t, uint32_t, char*)> callback) {
+void parse_log_stream(int fd, std::function<void(ermia::FID, ermia::OID, uint64_t, uint32_t, char*)> callback) {
     char* buff = new char[IO_SIZE * 2]; 
     
     size_t current_page_id = 0;

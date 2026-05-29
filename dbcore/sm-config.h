@@ -79,6 +79,7 @@ extern uint64_t benchmark_transactions;
 extern bool index_probe_only;
 extern uint32_t flusher_thread;
 extern uint32_t n_combine_log;
+extern bool recovery;
 
 inline bool buff_hit() {
   thread_local foedus::assorted::UniformRandom uniform_rng;
