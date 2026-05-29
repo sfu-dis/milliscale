@@ -285,7 +285,7 @@ void sm_oid_mgr::recreate_file(FID f) {
   }
 
   // TODO: remove magic number 1000
-  static const std::mutex lock_table[1000];
+  static std::mutex lock_table[1000];
   lock_table[f % 1000].lock();
   DEFER(lock_table[f % 1000].unlock());
 

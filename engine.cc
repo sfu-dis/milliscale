@@ -2,6 +2,7 @@
 #include "index/btree_wrapper.h"
 #include "index/hash_wrapper.h"
 #include "index/masstree_wrapper.h"
+#include "scanner.h"
 
 namespace ermia {
 
@@ -71,7 +72,8 @@ void Engine::Recovery() {
   // TODO: scan to get min non durable csn, currently set a dummy one
   uint64_t min_ndcsn = 1000000;
   std::map<FID, OID> himarks;
-  auto dfd = dirfd(ermia::config::log_dir);
+  DIR *logdir = opendir(ermia::config::log_dir.c_str());
+  auto dfd = dirfd(logdir);
   
   char filename[sizeof("tlog-01234567-01234567")];
   uint32_t id = 0;
@@ -84,7 +86,7 @@ void Engine::Recovery() {
     if (fd == -1) {
       break;
     }
-    parse_log_stream(fd, [oidmgr](FID f, OID o, uint64_t csn, uint32_t payload_size, char* data){
+    parse_log_stream(fd, [&](FID f, OID o, uint64_t csn, uint32_t payload_size, char* data){
       if (csn < min_ndcsn) {
         oidmgr->RecoveryUpsert(f, o, payload_size, data, csn);
       }
