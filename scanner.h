@@ -1,3 +1,5 @@
+#pragma once
+
 #include <unistd.h>
 #include <sys/types.h>
 #include <iostream>
@@ -41,16 +43,16 @@ int32_t read_page_from_file(int fd, size_t page_size, size_t page_id, void* poin
     return bytes_read;
 }
 
-void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::function<void(ermia::FID, ermia::OID, uint64_t, uint32_t, char*)> callback) {
+void* parse_dlog::log_block_records(const void* block_ptr, const void* end_ptr, std::function<void(ermia::FID, ermia::OID, uint64_t, uint32_t, char*)> callback) {
     // No enough space for log block header
-    if ((char*)block_ptr + sizeof(log_block) >= end_ptr) {
+    if ((char*)block_ptr + sizeof(dlog::log_block) >= end_ptr) {
         return nullptr;
     }
     
-    const auto* lb = static_cast<const log_block*>(block_ptr);
+    const auto* lb = static_cast<const dlog::log_block*>(block_ptr);
 
     // No enough space for log block body
-    if ((char*)block_ptr + sizeof(log_block) + lb->payload_size > end_ptr) {
+    if ((char*)block_ptr + sizeof(dlog::log_block) + lb->payload_size > end_ptr) {
         return nullptr;
     }
 
@@ -120,7 +122,7 @@ void parse_log_stream(int fd, std::function<void(ermia::FID, ermia::OID, uint64_
 
         while (next_lb != nullptr && next_lb < buff_end) {
             last_successful_lb = next_lb;
-            next_lb = static_cast<char*>(parse_log_block_records(next_lb, buff_end, callback));
+            next_lb = static_cast<char*>(parse_dlog::log_block_records(next_lb, buff_end, callback));
         }
 
         if (next_lb == buff_end) {

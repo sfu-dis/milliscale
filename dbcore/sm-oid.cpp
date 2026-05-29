@@ -625,15 +625,16 @@ void sm_oid_mgr::RecoveryUpsert(FID f, OID o, uint32_t payload_size, const char 
   // recreate_allocator(f, o);
   recreate_file(f);
   auto *ptr = oid_access(f, o);
+  fat_ptr head = NULL_PTR;
   varstr c(value, payload_size);
-  fat_ptr new_obj_ptr = Object::Create(c);
+  fat_ptr new_obj_ptr = Object::Create(&c);
   Object *new_object = (Object *) new_obj_ptr->offset();
   if (*ptr == NULL_PTR) {
     goto install;
   }
 start_over:
+  head = volatile_read(*ptr);
 
-  fat_ptr head = volatile_read(*ptr);
   ASSERT(head.asi_type() == 0);
   Object *old_desc = (Object *)head.offset();
   ASSERT(old_desc);
@@ -647,17 +648,17 @@ start_over:
     goto start_over;
   }
   // Only install when my csn is larger
-  if (csn > my_csn) {
+  if (CSN::from_ptr(csn) > my_csn) {
     return;
   }
-  new_object->SetCSN(my_csn);
+  new_object->SetCSN(GenerateCsnPtr(my_csn));
   new_object->SetNextPersistent(old_desc->GetNextPersistent());
   new_object->SetNextVolatile(old_desc->GetNextVolatile());
 
 install:
   if (__sync_bool_compare_and_swap(&ptr->_ptr, head._ptr, new_obj_ptr->_ptr)) {
     // Recycle old head
-    MM::deallocate(*head);
+    // MM::deallocate(*head);
   } else {
     goto start_over;
   }
