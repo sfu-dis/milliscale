@@ -70,6 +70,7 @@ bool log_direct_io = true;
 bool log_compress = true;
 uint64_t fetch_cold_tx_interval = 0;
 uint32_t loaders = 0;
+bool recovery = false;
 
 uint32_t flusher_thread = 0;
 uint32_t n_combine_log = 1;

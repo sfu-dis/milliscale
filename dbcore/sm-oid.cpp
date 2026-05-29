@@ -280,8 +280,19 @@ FID sm_oid_mgr::create_file(bool needs_alloc) {
  */
 void sm_oid_mgr::recreate_file(FID f) {
   if (file_exists(f)) {
-    LOG(FATAL) << "File already exists. Is this a secondary index?";
+    // LOG(FATAL) << "File already exists. Is this a secondary index?";
+    return;
   }
+
+  // TODO: remove magic number 1000
+  static const std::mutex lock_table[1000];
+  lock_table[f % 1000].lock();
+  DEFER(lock_table[f % 1000].unlock());
+
+  if (file_exists(f)) {
+    return;
+  }
+
   auto ptr = oid_array::make();
   oid_put(OBJARRAY_FID, f, ptr);
   ASSERT(file_exists(f));
@@ -608,6 +619,48 @@ fat_ptr sm_oid_mgr::free_oid(FID f, OID o) {
   *ptr = NULL_PTR;
   thread_free(self, f, o);
   return rval;
+}
+
+void sm_oid_mgr::RecoveryUpsert(FID f, OID o, uint32_t payload_size, const char *value, uint64_t my_csn) {
+  // recreate_allocator(f, o);
+  recreate_file(f);
+  auto *ptr = oid_access(f, o);
+  varstr c(value, payload_size);
+  fat_ptr new_obj_ptr = Object::Create(c);
+  Object *new_object = (Object *) new_obj_ptr->offset();
+  if (*ptr == NULL_PTR) {
+    goto install;
+  }
+start_over:
+
+  fat_ptr head = volatile_read(*ptr);
+  ASSERT(head.asi_type() == 0);
+  Object *old_desc = (Object *)head.offset();
+  ASSERT(old_desc);
+  ASSERT(head.size_code() != INVALID_SIZE_CODE);
+  dbtuple *version = (dbtuple *)old_desc->GetPayload();
+  auto csn = old_desc->GetCSN();
+
+  if (csn == NULL_PTR) {
+    // stepping on an unlinked version?
+    MM::deallocate(*new_obj_ptr);
+    goto start_over;
+  }
+  // Only install when my csn is larger
+  if (csn > my_csn) {
+    return;
+  }
+  new_object->SetCSN(my_csn);
+  new_object->SetNextPersistent(old_desc->GetNextPersistent());
+  new_object->SetNextVolatile(old_desc->GetNextVolatile());
+
+install:
+  if (__sync_bool_compare_and_swap(&ptr->_ptr, head._ptr, new_obj_ptr->_ptr)) {
+    // Recycle old head
+    MM::deallocate(*head);
+  } else {
+    goto start_over;
+  }
 }
 
 fat_ptr sm_oid_mgr::UpdateTuple(oid_array *oa, OID o, const varstr *value,

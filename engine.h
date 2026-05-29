@@ -23,6 +23,8 @@ struct Engine {
   static const uint16_t kIndexBTreeOLC = 0x2;
   static const uint16_t kIndexExHash = 0x3;
 
+  void Recovery();
+
   // Create a table without any index (at least yet)
   TableDescriptor *CreateTable(const char *name);
 

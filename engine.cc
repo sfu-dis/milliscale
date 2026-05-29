@@ -40,9 +40,64 @@ Engine::Engine() {
   sm_oid_mgr::create();
   ALWAYS_ASSERT(oidmgr);
   ermia::dlog::initialize();
+  if (ermia::config::recovery) {
+    Recovery();
+  }
 }
 
 Engine::~Engine() { ermia::dlog::uninitialize(); }
+
+int32_t read_page_from_file(int fd, size_t page_size, size_t page_id, void* pointer) {
+    ASSERT(fd >= 0);
+    ASSERT(pointer != nullptr);
+    ASSERT(page_size != 0);
+
+    off_t offset = static_cast<off_t>(page_id) * page_size;
+    ssize_t bytes_read = pread(fd, pointer, page_size, offset);
+
+    if (bytes_read == -1) {
+        std::cerr << "Read error: " << std::strerror(errno) 
+                  << " (Page ID: " << page_id << ", Offset: " << offset << ")" << std::endl;
+        return -1;
+    } 
+    
+    return bytes_read;
+}
+
+
+void Engine::Recovery() {
+  std::cout << "[Recovery] Start\n";
+  // TODO: multi thread recovery, each thread using a different id
+  // TODO: scan to get min non durable csn, currently set a dummy one
+  uint64_t min_ndcsn = 1000000;
+  std::map<FID, OID> himarks;
+  auto dfd = dirfd(ermia::config::log_dir);
+  
+  char filename[sizeof("tlog-01234567-01234567")];
+  uint32_t id = 0;
+  uint32_t num = 0;
+  while (true) {
+    size_t n = snprintf(filename, sizeof(filename),
+                        "tlog-%08x-%08x", id, num);
+    num ++;
+    int fd = openat(dfd, filename, O_RDONLY);
+    if (fd == -1) {
+      break;
+    }
+    parse_log_stream(fd, [oidmgr](FID f, OID o, uint64_t csn, uint32_t payload_size, char* data){
+      if (csn < min_ndcsn) {
+        oidmgr->RecoveryUpsert(f, o, payload_size, data, csn);
+      }
+      if (himarks.count(f) == 0) {
+        himarks[f] = 0;
+      } else {
+        himarks[f] = max(himarks[f], o);
+      }
+    });
+  }
+  // TODO: base on himarks to recreate allocators
+  // TODO: recreate indexes (hard code)
+}
 
 TableDescriptor *Engine::CreateTable(const char *name) {
   auto *td = TableDescriptor::New(name);

@@ -195,6 +195,9 @@ struct sm_oid_mgr {
     }
   }
 
+  void sm_oid_mgr::RecoveryUpsert(FID f, OID o, uint32_t tuple_size, char* data, uint64_t my_csn);
+
+
   /* Return a fat_ptr to the overwritten object (could be an in-flight version!)
    */
   fat_ptr UpdateTuple(oid_array *oa, OID o, const varstr *value,

@@ -157,9 +157,10 @@ void bench_runner::run() {
 
   // load data, unless we recover from logs or is a backup server (recover from
   // shipped logs)
-  ermia::volatile_write(ermia::config::state, ermia::config::kStateLoading);
-  std::vector<bench_loader *> loaders = make_loaders();
-  {
+  if (!ermia::config::recovery){
+    ermia::volatile_write(ermia::config::state, ermia::config::kStateLoading);
+    std::vector<bench_loader *> loaders = make_loaders();
+
     util::scoped_timer t("dataloading");
     uint32_t done = 0;
     uint32_t n_running = 0;
