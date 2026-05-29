@@ -48,24 +48,6 @@ Engine::Engine() {
 
 Engine::~Engine() { ermia::dlog::uninitialize(); }
 
-int32_t read_page_from_file(int fd, size_t page_size, size_t page_id, void* pointer) {
-    ASSERT(fd >= 0);
-    ASSERT(pointer != nullptr);
-    ASSERT(page_size != 0);
-
-    off_t offset = static_cast<off_t>(page_id) * page_size;
-    ssize_t bytes_read = pread(fd, pointer, page_size, offset);
-
-    if (bytes_read == -1) {
-        std::cerr << "Read error: " << std::strerror(errno) 
-                  << " (Page ID: " << page_id << ", Offset: " << offset << ")" << std::endl;
-        return -1;
-    } 
-    
-    return bytes_read;
-}
-
-
 void Engine::Recovery() {
   std::cout << "[Recovery] Start\n";
   // TODO: multi thread recovery, each thread using a different id

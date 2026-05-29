@@ -46,7 +46,7 @@ static uint32_t populate_log_record(log_record::logrec_type type,
 
   // Copy contents
   logrec->type = type;
-  logrec->rec_size = size;
+  logrec->size = size;
   logrec->fid = fid;
   logrec->oid = oid;
   logrec->csn = block->csn;
