@@ -633,30 +633,31 @@ void sm_oid_mgr::RecoveryUpsert(FID f, OID o, uint32_t payload_size, const char 
     goto install;
   }
 start_over:
-  head = volatile_read(*ptr);
+  {
+    head = volatile_read(*ptr);
 
-  ASSERT(head.asi_type() == 0);
-  Object *old_desc = (Object *)head.offset();
-  ASSERT(old_desc);
-  ASSERT(head.size_code() != INVALID_SIZE_CODE);
-  dbtuple *version = (dbtuple *)old_desc->GetPayload();
-  auto csn = old_desc->GetCSN();
+    ASSERT(head.asi_type() == 0);
+    Object* old_desc = (Object *)head.offset();
+    ASSERT(old_desc);
+    ASSERT(head.size_code() != INVALID_SIZE_CODE);
+    dbtuple *version = (dbtuple *)old_desc->GetPayload();
+    auto csn = old_desc->GetCSN();
 
-  if (csn == NULL_PTR) {
-    // stepping on an unlinked version?
-    MM::deallocate(new_obj_ptr);
-    goto start_over;
+    if (csn == NULL_PTR) {
+      // stepping on an unlinked version?
+      MM::deallocate(new_obj_ptr);
+      goto start_over;
+    }
+    // Only install when my csn is larger
+    if (CSN::from_ptr(csn).offset() > my_csn) {
+      return;
+    }
+    fat_ptr csn_ptr = CSN::make(my_csn).to_ptr();
+
+    new_object->SetCSN(csn_ptr);
+    new_object->SetNextPersistent(old_desc->GetNextPersistent());
+    new_object->SetNextVolatile(old_desc->GetNextVolatile());
   }
-  // Only install when my csn is larger
-  if (CSN::from_ptr(csn).offset() > my_csn) {
-    return;
-  }
-  fat_ptr csn_ptr = CSN::make(my_csn).to_ptr();
-
-  new_object->SetCSN(csn_ptr);
-  new_object->SetNextPersistent(old_desc->GetNextPersistent());
-  new_object->SetNextVolatile(old_desc->GetNextVolatile());
-
 install:
   if (__sync_bool_compare_and_swap(&ptr->_ptr, head._ptr, new_obj_ptr._ptr)) {
     // Recycle old head

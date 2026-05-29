@@ -18,7 +18,7 @@ struct log_record {
   };
 
   logrec_type type : 8;
-  uint32_t rec_size : 24;
+  uint32_t size : 24;
   FID fid;
   OID oid;
 
