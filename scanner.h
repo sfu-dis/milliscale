@@ -11,6 +11,8 @@
 #include "tuple.h"
 #include "dbcore/dlog-tx.h"
 
+namespace ermia {
+
 #define IO_SIZE (2*1024*1024)
 
 int32_t read_page_from_file(int fd, size_t page_size, size_t page_id, void* pointer) {
@@ -133,3 +135,4 @@ void parse_log_stream(int fd, std::function<void(ermia::FID, ermia::OID, uint64_
         }
     }
 }
+}   // namespace ermia

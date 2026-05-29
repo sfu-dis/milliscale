@@ -195,7 +195,7 @@ struct sm_oid_mgr {
     }
   }
 
-  void RecoveryUpsert(FID f, OID o, uint32_t payload_size, char* value, uint64_t my_csn);
+  void RecoveryUpsert(FID f, OID o, uint32_t payload_size, const char *value, uint64_t my_csn);
 
   /* Return a fat_ptr to the overwritten object (could be an in-flight version!)
    */
