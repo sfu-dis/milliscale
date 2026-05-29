@@ -43,7 +43,7 @@ int32_t read_page_from_file(int fd, size_t page_size, size_t page_id, void* poin
     return bytes_read;
 }
 
-void* parse_dlog::log_block_records(const void* block_ptr, const void* end_ptr, std::function<void(ermia::FID, ermia::OID, uint64_t, uint32_t, char*)> callback) {
+void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::function<void(ermia::FID, ermia::OID, uint64_t, uint32_t, char*)> callback) {
     // No enough space for log block header
     if ((char*)block_ptr + sizeof(dlog::log_block) >= end_ptr) {
         return nullptr;
@@ -59,9 +59,9 @@ void* parse_dlog::log_block_records(const void* block_ptr, const void* end_ptr, 
     uint32_t current_offset = 0;
     int record_count = 0;
 
-    while (current_offset + sizeof(log_record) <= lb->payload_size) {
+    while (current_offset + sizeof(dlog::log_record) <= lb->payload_size) {
         
-        const auto* rec = reinterpret_cast<const log_record*>(lb->payload + current_offset);
+        const auto* rec = reinterpret_cast<const dlog::log_record*>(lb->payload + current_offset);
         const auto* tuple = reinterpret_cast<const ermia::dbtuple*>(rec->data);
         callback(rec->fid, rec->oid, rec->csn, tuple->size, (char*) &tuple->value_start);
         // std::cout << "  Record #" << ++record_count << ":" << std::endl;
@@ -73,13 +73,13 @@ void* parse_dlog::log_block_records(const void* block_ptr, const void* end_ptr, 
         assert (current_offset + rec->size <= lb->payload_size);
 
         // // Read tuple
-        // if (current_offset + sizeof(log_record) + sizeof(ermia::dbtuple) <= lb->payload_size) {
+        // if (current_offset + sizeof(dlog::log_record) + sizeof(ermia::dbtuple) <= lb->payload_size) {
         //     const auto* tuple = reinterpret_cast<const ermia::dbtuple*>(rec->data);
         //     // std::cout << "    Tuple Size: " << tuple->size << std::endl;
         //     // std::cout << "    current offset: " << current_offset << std::endl;
         // }
 
-        uint32_t step = align_up(rec->size + sizeof(log_record));
+        uint32_t step = align_up(rec->size + sizeof(dlog::log_record));
         current_offset += step;
 
         if (current_offset >= lb->payload_size) {
@@ -122,7 +122,7 @@ void parse_log_stream(int fd, std::function<void(ermia::FID, ermia::OID, uint64_
 
         while (next_lb != nullptr && next_lb < buff_end) {
             last_successful_lb = next_lb;
-            next_lb = static_cast<char*>(parse_dlog::log_block_records(next_lb, buff_end, callback));
+            next_lb = static_cast<char*>(parse_log_block_records(next_lb, buff_end, callback));
         }
 
         if (next_lb == buff_end) {

@@ -628,7 +628,7 @@ void sm_oid_mgr::RecoveryUpsert(FID f, OID o, uint32_t payload_size, const char 
   fat_ptr head = NULL_PTR;
   varstr c(value, payload_size);
   fat_ptr new_obj_ptr = Object::Create(&c);
-  Object *new_object = (Object *) new_obj_ptr->offset();
+  Object *new_object = (Object *) new_obj_ptr.offset();
   if (*ptr == NULL_PTR) {
     goto install;
   }
@@ -644,19 +644,21 @@ start_over:
 
   if (csn == NULL_PTR) {
     // stepping on an unlinked version?
-    MM::deallocate(*new_obj_ptr);
+    MM::deallocate(new_obj_ptr);
     goto start_over;
   }
   // Only install when my csn is larger
-  if (CSN::from_ptr(csn) > my_csn) {
+  if (CSN::from_ptr(csn).offset() > my_csn) {
     return;
   }
-  new_object->SetCSN(GenerateCsnPtr(my_csn));
+  fat_ptr csn_ptr = CSN::make(my_csn).to_ptr();
+
+  new_object->SetCSN(csn_ptr);
   new_object->SetNextPersistent(old_desc->GetNextPersistent());
   new_object->SetNextVolatile(old_desc->GetNextVolatile());
 
 install:
-  if (__sync_bool_compare_and_swap(&ptr->_ptr, head._ptr, new_obj_ptr->_ptr)) {
+  if (__sync_bool_compare_and_swap(&ptr->_ptr, head._ptr, new_obj_ptr._ptr)) {
     // Recycle old head
     // MM::deallocate(*head);
   } else {
