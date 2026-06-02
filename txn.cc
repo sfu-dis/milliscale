@@ -184,12 +184,15 @@ rc_t transaction::si_commit() {
 
     // Populate log block and obtain persistent address
     uint32_t off = lb->payload_size;
-    if (w.is_insert) {
+    if (w.type == write_record_t::record_type::INSERT) {
       auto ret_off = dlog::log_insert(lb, w.fid, w.oid, (char *)tuple, w.size);
       ALWAYS_ASSERT(ret_off == off);
-    } else {
+    } else if (w.type == write_record_t::record_type::UPDATE) {
       // Use the delta if delta is provided, otherwise use the full record
       auto ret_off = dlog::log_update(lb, w.fid, w.oid, w.delta ? w.delta : (char *)tuple, w.size, w.delta);
+      ALWAYS_ASSERT(ret_off == off);
+    } else if (w.type == write_record_t::record_type::INSERT_KEY) {
+      auto ret_off = dlog::log_insert_key(lb, w.fid, w.oid, (char *)tuple, w.size);
       ALWAYS_ASSERT(ret_off == off);
     }
     ALWAYS_ASSERT(lb->payload_size <= lb->capacity);
@@ -317,7 +320,7 @@ rc_t transaction::Update(TableDescriptor *td, OID oid, varstr *v,
       */
       add_to_write_set(tuple_array->get(oid), tuple_fid, oid, 
                        delta ? delta_size : tuple->size,
-                       false, false, delta_offset, delta);
+                      write_record_t::record_type::UPDATE, false, delta_offset, delta);
       prev_persistent_ptr = prev_obj->GetPersistentAddress();
     }
 
@@ -348,7 +351,7 @@ OID transaction::Insert(TableDescriptor *td, bool cold, varstr *value,
   oidmgr->oid_put_new(tuple_array, oid, new_head);
 
   ASSERT(tuple->size == value->size());
-  add_to_write_set(tuple_array->get(oid), tuple_fid, oid, tuple->size, true,
+  add_to_write_set(tuple_array->get(oid), tuple_fid, oid, tuple->size, write_record_t::record_type::INSERT,
                    cold);
 
   if (out_tuple) {
@@ -359,17 +362,23 @@ OID transaction::Insert(TableDescriptor *td, bool cold, varstr *value,
 
 void transaction::LogIndexInsert(UnorderedIndex *index, OID oid,
                                  const varstr *key) {
-  /*
+  
   // Note: here we log the whole key varstr so that recovery can figure out the
   // real key length with key->size(), otherwise it'll have to use the decoded
   // (inaccurate) size (and so will build a different index).
-  auto record_size = align_up(sizeof(varstr) + key->size());
-  ASSERT((char *)key->data() == (char *)key + sizeof(varstr));
-  auto size_code = encode_size_aligned(record_size);
-  log->log_insert_index(index->GetIndexFid(), oid,
-                        fat_ptr::make((void *)key, size_code),
-                        DEFAULT_ALIGNMENT_BITS, NULL);
-  */
+  // auto record_size = align_up(sizeof(varstr) + key->size());
+  // ASSERT((char *)key->data() == (char *)key + sizeof(varstr));
+  // auto size_code = encode_size_aligned(record_size);
+  // log->log_insert_index(index->GetIndexFid(), oid,
+  //                       fat_ptr::make((void *)key, size_code),
+  //                       DEFAULT_ALIGNMENT_BITS, NULL);
+
+  fat_ptr obj = Object::Create(key);
+  dbtuple* t = (dbtuple *)((Object *)obj.offset())->GetPayload();
+
+  add_to_write_set(obj, index->GetIndexFid(), oid, t->size, write_record_t::record_type::INSERT_KEY,
+                   false);
+  
 }
 
 rc_t transaction::DoTupleRead(dbtuple *tuple, varstr *out_v) {

@@ -40,19 +40,24 @@ namespace ermia {
 // updates will leave only one entry by the first update. Dereferencing
 // the entry pointer results a fat_ptr to the new object.
 struct write_record_t {
+  enum record_type{
+    INSERT,
+    UPDATE,
+    INSERT_KEY
+  };
   fat_ptr *entry;
   FID fid;
   OID oid;
   uint64_t size;  // size of the record if delta isn't provided, otherwise size of the delta
-  bool is_insert;
+  record_type type;
   bool is_cold;
   uint32_t delta_offset;
   char *delta;
-  write_record_t(fat_ptr *entry, FID fid, OID oid, uint64_t size, bool insert, bool cold,
+  write_record_t(fat_ptr *entry, FID fid, OID oid, uint64_t size, record_type type, bool cold,
                  uint32_t delta_offset, char *delta)
-    : entry(entry), fid(fid), oid(oid), size(size), is_insert(insert), is_cold(cold),
+    : entry(entry), fid(fid), oid(oid), size(size), type(type), is_cold(cold),
       delta_offset(delta_offset), delta(delta) {}
-  write_record_t() : entry(nullptr), fid(0), oid(0), size(0), is_insert(false), is_cold(false),
+  write_record_t() : entry(nullptr), fid(0), oid(0), size(0), type(record_type::UPDATE), is_cold(false),
                      delta_offset(0), delta(nullptr) {}
   inline Object *get_object() { return (Object *)entry->offset(); }
 };
@@ -62,9 +67,9 @@ struct write_set_t {
   uint32_t num_entries;
   write_record_t entries[kMaxEntries];
   write_set_t() : num_entries(0) {}
-  inline void emplace_back(fat_ptr *oe, FID fid, OID oid, uint32_t size, bool insert, bool cold, uint32_t delta_offset, char *delta) {
+  inline void emplace_back(fat_ptr *oe, FID fid, OID oid, uint32_t size, record_type type, bool cold, uint32_t delta_offset, char *delta) {
     ALWAYS_ASSERT(num_entries < kMaxEntries);
-    new (&entries[num_entries]) write_record_t(oe, fid, oid, size, insert, cold, delta_offset, delta);
+    new (&entries[num_entries]) write_record_t(oe, fid, oid, size, type, cold, delta_offset, delta);
     ++num_entries;
     ASSERT(entries[num_entries - 1].entry == oe);
   }
@@ -132,7 +137,7 @@ public:
 
   inline str_arena &string_allocator() { return *sa; }
 
-  inline void add_to_write_set(fat_ptr *entry, FID fid, OID oid, uint64_t size, bool insert, bool cold,
+  inline void add_to_write_set(fat_ptr *entry, FID fid, OID oid, uint64_t size, write_record_t::record_type type, bool cold,
                                uint32_t delta_offset = 0, char *delta = nullptr) {
 #ifndef NDEBUG
     for (uint32_t i = 0; i < write_set.size(); ++i) {
@@ -150,7 +155,7 @@ public:
     // Each write set entry still just records the size of the actual "data" to
     // be inserted to the log excluding dlog::log_record, which will be
     // prepended by log_insert/update etc.
-    write_set.emplace_back(entry, fid, oid, size + (delta ? 0 : sizeof(dbtuple)), insert, cold, delta_offset, delta);
+    write_set.emplace_back(entry, fid, oid, size + (delta ? 0 : sizeof(dbtuple)), type, cold, delta_offset, delta);
   }
 
   inline TXN::xid_context *GetXIDContext() { return xc; }

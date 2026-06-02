@@ -15,6 +15,7 @@ struct log_record {
     INSERT,
     UPDATE,
     UPDATE_DELTA,
+    INSERT_KEY,
   };
 
   logrec_type type : 8;
@@ -66,6 +67,10 @@ static uint32_t populate_log_record(log_record::logrec_type type,
     block->payload_size += align_up(size + sizeof(log_record));
   }
   return off;
+}
+
+inline static uint32_t log_insert_key(log_block *block, FID fid, OID oid, const char *image, const uint32_t size) {
+  return populate_log_record(log_record::INSERT_KEY, block, fid, oid, image, size);
 }
 
 inline static uint32_t log_insert(log_block *block, FID fid, OID oid, const char *image, const uint32_t size) {
