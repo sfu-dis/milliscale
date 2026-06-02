@@ -41,9 +41,6 @@ Engine::Engine() {
   sm_oid_mgr::create();
   ALWAYS_ASSERT(oidmgr);
   ermia::dlog::initialize();
-  if (ermia::config::recovery) {
-    Recovery();
-  }
 }
 
 Engine::~Engine() { ermia::dlog::uninitialize(); }
@@ -70,6 +67,7 @@ void Engine::Recovery() {
     }
     parse_log_stream(fd, [&](FID f, OID o, uint64_t csn, uint32_t payload_size, char* data){
       if (csn < min_ndcsn) {
+        std::cout << "FID=" << f << ", OID=" << o << std::endl;
         oidmgr->RecoveryUpsert(f, o, payload_size, data, csn);
       }
       if (himarks.count(f) == 0) {

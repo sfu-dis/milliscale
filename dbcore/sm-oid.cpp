@@ -652,13 +652,13 @@ start_over:
     if (CSN::from_ptr(csn).offset() > my_csn) {
       return;
     }
-    fat_ptr csn_ptr = CSN::make(my_csn).to_ptr();
 
-    new_object->SetCSN(csn_ptr);
     new_object->SetNextPersistent(old_desc->GetNextPersistent());
     new_object->SetNextVolatile(old_desc->GetNextVolatile());
   }
 install:
+  fat_ptr csn_ptr = CSN::make(my_csn).to_ptr();
+  new_object->SetCSN(csn_ptr);
   if (__sync_bool_compare_and_swap(&ptr->_ptr, head._ptr, new_obj_ptr._ptr)) {
     // Recycle old head
     // MM::deallocate(*head);

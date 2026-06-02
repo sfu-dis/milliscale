@@ -384,7 +384,9 @@ void bench_main(int argc, char **argv,
               << std::endl;
   }
 
-  system(("rm -rf " + FLAGS_log_data_dir + "/*").c_str());
+  if (!ermia::config::recovery) {
+    system(("rm -rf " + FLAGS_log_data_dir + "/*").c_str());
+  }
   ermia::MM::prepare_node_memory();
 
   // Must have everything in config ready by this point
