@@ -175,6 +175,18 @@ rc_t transaction::si_commit() {
   // do it first, and generate the log block as we scan the write set once,
   // leveraging pipelined commit!
 
+  for (uint32_t i = 0; i < index_set.size(); ++i) {
+    auto &w = index_set[i];
+    Object *object = w.get_object();
+    dbtuple *tuple = (dbtuple *)object->GetPayload();
+
+    // Populate log block and obtain persistent address
+    uint32_t off = lb->payload_size;
+    auto ret_off = dlog::log_insert_key(lb, w.fid, w.oid, (char *)tuple, w.size);
+    ALWAYS_ASSERT(ret_off == off);
+    ALWAYS_ASSERT(lb->payload_size <= lb->capacity);
+  }
+
   // Post-commit: install CSN to tuples (traverse write-tuple), generate log
   // records, etc.
   for (uint32_t i = 0; i < write_set.size(); ++i) {
@@ -190,9 +202,6 @@ rc_t transaction::si_commit() {
     } else if (w.type == write_record_t::record_type::UPDATE) {
       // Use the delta if delta is provided, otherwise use the full record
       auto ret_off = dlog::log_update(lb, w.fid, w.oid, w.delta ? w.delta : (char *)tuple, w.size, w.delta);
-      ALWAYS_ASSERT(ret_off == off);
-    } else if (w.type == write_record_t::record_type::INSERT_KEY) {
-      auto ret_off = dlog::log_insert_key(lb, w.fid, w.oid, (char *)tuple, w.size);
       ALWAYS_ASSERT(ret_off == off);
     }
     ALWAYS_ASSERT(lb->payload_size <= lb->capacity);
@@ -375,10 +384,8 @@ void transaction::LogIndexInsert(UnorderedIndex *index, OID oid,
 
   fat_ptr obj = Object::Create(key);
   dbtuple* t = (dbtuple *)((Object *)obj.offset())->GetPayload();
-
-  add_to_write_set(obj, index->GetIndexFid(), oid, t->size, write_record_t::record_type::INSERT_KEY,
-                   false);
-  
+  ASSERT(t->size == key->size());
+  add_to_index_set(obj, index->GetIndexFid(), oid, t->size);
 }
 
 rc_t transaction::DoTupleRead(dbtuple *tuple, varstr *out_v) {
