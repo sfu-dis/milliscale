@@ -35,6 +35,7 @@ static uint32_t populate_log_record(log_record::logrec_type type,
                                     const uint32_t size,
                                     const uint32_t delta_offset = 0) {
   LOG_IF(FATAL, type != log_record::logrec_type::INSERT &&
+                type != log_record::logrec_type::INSERT_KEY &&
                 type != log_record::logrec_type::UPDATE &&
                 type != log_record::logrec_type::UPDATE_DELTA)
                 << "Wrong log record type";
