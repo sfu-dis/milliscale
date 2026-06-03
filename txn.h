@@ -175,7 +175,7 @@ public:
   #ifndef NDEBUG
     for (uint32_t i = 0; i < index_set.size(); ++i) {
       auto &idx_rec = index_set[i];
-      ASSERT(idx_rec.oid != oid);
+      ASSERT(idx_rec.oid != oid || idx_rec.fid != fid);
     }
   #endif
 

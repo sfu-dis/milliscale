@@ -12,6 +12,7 @@ transaction::transaction(uint64_t flags, str_arena &sa)
     masstree_absent_set.clear();
   }
   write_set.clear();
+  index_set.clear();
 #if defined(SSN)
   read_set.clear();
 #endif
@@ -236,7 +237,7 @@ rc_t transaction::si_commit() {
       ASSERT(tuple->GetObject()->GetCSN().asi_type() == fat_ptr::ASI_CSN);
     }
   }
-  if (write_set.size()) {
+  if (write_set.size() || index_set.size()) {
     log->holes --;
   }
   ALWAYS_ASSERT(!lb || lb->payload_size == lb->capacity);
