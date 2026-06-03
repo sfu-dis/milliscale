@@ -190,7 +190,7 @@ void bench_runner::run() {
   }
 
   if (ermia::config::recovery) {
-    Recovery();
+    db->Recovery();
   }
   ermia::volatile_write(ermia::MM::safesnap_lsn, ermia::dlog::current_csn);
   ALWAYS_ASSERT(ermia::MM::safesnap_lsn);
