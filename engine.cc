@@ -58,7 +58,7 @@ void Engine::Recovery() {
   // TODO: scan to get min non durable csn, currently set a dummy one
   uint64_t min_ndcsn = 1000000;
   std::map<FID, OID> himarks;
-  DIR *logdir = opendir(ermia::config::log_dir.c_str());
+  DIR *logdir = opendir((ermia::config::log_dir + ermia::config::old_log_suffix).c_str());
   auto dfd = dirfd(logdir);
   
   char filename[sizeof("tlog-01234567-01234567")];
@@ -86,7 +86,8 @@ void Engine::Recovery() {
         if (rec->type == ermia::dlog::log_record::INSERT_KEY) {
           // insert to index
           varstr v(data, payload_size);
-          index_fid_map[f]->RecoveryInsert(v, o);
+          bool success = index_fid_map[f]->RecoveryInsert(v, o);
+          ASSERT(success);
         } else {
           oidmgr->RecoveryUpsert(f, o, payload_size, data, csn);
         }

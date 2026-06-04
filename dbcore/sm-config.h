@@ -17,6 +17,8 @@ static const uint64_t KB = 1024;
 static const uint64_t MB = KB * 1024;
 static const uint64_t GB = MB * 1024;
 
+static const std::string old_log_suffix = "_old";
+
 // Common settings
 extern bool tls_alloc;
 extern bool threadpool;

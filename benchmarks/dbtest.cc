@@ -386,6 +386,9 @@ void bench_main(int argc, char **argv,
 
   if (!ermia::config::recovery) {
     system(("rm -rf " + FLAGS_log_data_dir + "/*").c_str());
+  } else {
+    system(("mv " + FLAGS_log_data_dir + " " + FLAGS_log_data_dir + ermia::config::old_log_suffix).c_str());
+    system(("mkdir " + FLAGS_log_data_dir).c_str());
   }
   ermia::MM::prepare_node_memory();
 
