@@ -63,6 +63,7 @@ void Engine::Recovery() {
     uint32_t num = 0;
     for (;;) {
       size_t n = snprintf(filename, sizeof(filename), "tlog-%08x-%08x", id, num);
+      num++;
       int fd = openat(dfd, filename, O_RDONLY);
       if (fd == -1) { break; }
 
@@ -98,12 +99,12 @@ void Engine::Recovery() {
     }
   };
 
-  vector<ermia::thread::Thread*> recovery_threads;
+  std::vector<ermia::thread::Thread*> recovery_threads;
   for (size_t i = 0; i < ermia::config::recovery_parallel_logs; i++) {
     ermia::thread::Thread *thread = ermia::thread::GetThread(true);
     ALWAYS_ASSERT(thread);
     recovery_threads.push_back(thread);
-    thread->StartTask(recovery_task, reinterpret_cast<char *>i);
+    thread->StartTask(recovery_task, reinterpret_cast<char *>(i));
   }
 
   for (auto* th : recovery_threads) {
