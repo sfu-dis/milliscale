@@ -43,7 +43,7 @@ int32_t read_page_from_file(int fd, size_t page_size, size_t page_id, void* poin
     return bytes_read;
 }
 
-void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::function<void(ermia::dlog::log_record* rec)> callback) {
+void* parse_log_block_records(const void* block_ptr, const void* end_ptr, uint64_t block_file_offset, std::function<void(ermia::dlog::log_record* rec, uint64_t offset)> callback) {
     // No enough space for log block header
     if ((char*)block_ptr + sizeof(dlog::log_block) >= end_ptr) {
         return nullptr;
@@ -62,8 +62,9 @@ void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::f
     while (current_offset + sizeof(dlog::log_record) <= lb->payload_size) {
         
         auto* rec = (dlog::log_record*)(lb->payload + current_offset);
+        size_t rec_file_offset = block_file_offset + sizeof(dlog::log_block) + current_offset;
         // const auto* tuple = reinterpret_cast<const ermia::dbtuple*>(rec->data);
-        callback(rec);
+        callback(rec, rec_file_offset);
         // callback(rec->type, rec->fid, rec->oid, rec->csn, tuple->size, (char*) &tuple->value_start);
         // std::cout << "  Record #" << ++record_count << ":" << std::endl;
         // std::cout << "    Type: " << static_cast<int>(rec->type) 
@@ -91,14 +92,14 @@ void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::f
     return (void*) (lb->payload + lb->capacity);
 }
 
-void parse_log_stream(int fd, std::function<void(ermia::dlog::log_record* rec)> callback) {
+void parse_log_stream(int fd, std::function<void(ermia::dlog::log_record* rec, uint64_t offset)> callback) {
     char* buff = new char[IO_SIZE * 2]; 
     
     size_t current_page_id = 0;
     size_t pages_read_count = 0;
     
     size_t residual_bytes = 0;
-
+    uint64_t file_offset_of_buff = 0;
     while (true) {
     
         char* read_target_ptr = buff + residual_bytes;
@@ -123,11 +124,13 @@ void parse_log_stream(int fd, std::function<void(ermia::dlog::log_record* rec)> 
 
         while (next_lb != nullptr && next_lb < buff_end) {
             last_successful_lb = next_lb;
-            next_lb = static_cast<char*>(parse_log_block_records(next_lb, buff_end, callback));
+            size_t block_file_offset = file_offset_of_buff + (next_lb - buff);
+            next_lb = static_cast<char*>(parse_log_block_records(next_lb, buff_end, block_file_offset, callback));
         }
 
         if (next_lb == buff_end) {
             residual_bytes = 0;
+            file_offset_of_buff += total_valid_bytes;
         } else {
             residual_bytes = buff_end - last_successful_lb;
             assert(residual_bytes < IO_SIZE);
@@ -135,7 +138,9 @@ void parse_log_stream(int fd, std::function<void(ermia::dlog::log_record* rec)> 
             if (residual_bytes > 0 && last_successful_lb != buff) {
                 std::memmove(buff, last_successful_lb, residual_bytes);
             }
+            file_offset_of_buff += (last_successful_lb - buff);
         }
     }
+    delete[] buff;
 }
 }   // namespace ermia

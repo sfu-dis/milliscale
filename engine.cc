@@ -67,7 +67,7 @@ void Engine::Recovery() {
       int fd = openat(dfd, filename, O_RDONLY);
       if (fd == -1) { break; }
 
-      parse_log_stream(fd, [&](ermia::dlog::log_record* rec){
+      parse_log_stream(fd, [&](ermia::dlog::log_record* rec, uint64_t offset){
         FID f = rec->fid;
         OID o = rec->oid;
         uint64_t csn = rec->csn;
@@ -86,8 +86,7 @@ void Engine::Recovery() {
             // insert to table
             auto aligned_size = align_up(payload_size + sizeof(dlog::log_record));
             auto size_code = encode_size_aligned(aligned_size);
-            // TODO(jiatangz): Critical, compute the real offset
-            fat_ptr pdest = LSN::make(id, 0xbeef, num - 1, size_code).to_ptr();
+            fat_ptr pdest = LSN::make(id, offset, num - 1, size_code).to_ptr();
             oidmgr->RecoveryUpsert(f, o, payload_size, data, csn, pdest);
           }
           auto [it, inserted] = himarks.try_emplace(f, o); 
