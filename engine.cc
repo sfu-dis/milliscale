@@ -92,7 +92,7 @@ void Engine::Recovery() {
           auto aligned_size = align_up(payload_size + sizeof(dlog::log_record));
           auto size_code = encode_size_aligned(aligned_size);
           // TODO(jiatangz): Critical, compute the real offset
-          fat_ptr pdest = LSN::make(id, 0xbeef num - 1, size_code).to_ptr();
+          fat_ptr pdest = LSN::make(id, 0xbeef, num - 1, size_code).to_ptr();
           oidmgr->RecoveryUpsert(f, o, payload_size, data, csn, pdest);
         }
         auto [it, inserted] = himarks.try_emplace(f, o); 
