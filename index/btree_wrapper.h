@@ -16,6 +16,8 @@ struct BTreeOLCIndex : public OrderedIndex {
   ~BTreeOLCIndex() {}
 
   bool InsertOID(transaction *t, const varstr &key, OID oid) override;
+  
+  bool RecoveryInsert(const varstr &key, OID oid) override;
 
   rc_t Scan(transaction *t, const varstr &start_key, const varstr *end_key, ScanCallback &callback) override;
   rc_t ReverseScan(transaction *t, const varstr &start_key, const varstr *end_key, ScanCallback &callback) override { return {RC_FALSE}; }

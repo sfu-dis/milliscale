@@ -64,6 +64,8 @@ struct ConcurrentMasstreeIndex : public OrderedIndex {
   ConcurrentMasstree &GetMasstree() { return masstree_; }
 
   bool InsertOID(transaction *t, const varstr &key, OID oid) override;
+  
+  bool RecoveryInsert(const varstr &key, OID oid) override;
 
   rc_t Scan(transaction *t, const varstr &start_key, const varstr *end_key,
                      ScanCallback &callback) override;

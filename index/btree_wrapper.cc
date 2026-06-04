@@ -23,6 +23,12 @@ bool BTreeOLCIndex<KeyLength>::InsertOID(transaction *t, const varstr &key, OID 
 }
 
 template<uint32_t KeyLength>
+bool BTreeOLCIndex<KeyLength>::RecoveryInsert(const varstr &key, OID oid) {
+  FixedLengthKey<KeyLength> *k = (FixedLengthKey<KeyLength> *)key.p;
+  return btree.insert(*k, oid);
+}
+
+template<uint32_t KeyLength>
 rc_t BTreeOLCIndex<KeyLength>::Scan(transaction *t, const varstr &start_key,
                                     const varstr *end_key, ScanCallback &callback) {
   rc_t rc = {RC_INVALID};

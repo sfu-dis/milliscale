@@ -46,6 +46,9 @@ struct UnorderedIndex {
 
   // Traverse the version chain to obtain the target record version
   void GetVersion(transaction *t, rc_t &rc, varstr &value, OID oid);
+
+  // Only insert to index
+  virtual bool RecoveryInsert(const varstr &key, OID oid) = 0;
 };
 
 // Base class for user-facing ordered index implementations

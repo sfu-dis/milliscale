@@ -43,7 +43,7 @@ int32_t read_page_from_file(int fd, size_t page_size, size_t page_id, void* poin
     return bytes_read;
 }
 
-void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::function<void(ermia::FID, ermia::OID, uint64_t, uint32_t, char*)> callback) {
+void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::function<void(ermia::dlog::log_record* rec)> callback) {
     // No enough space for log block header
     if ((char*)block_ptr + sizeof(dlog::log_block) >= end_ptr) {
         return nullptr;
@@ -62,8 +62,9 @@ void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::f
     while (current_offset + sizeof(dlog::log_record) <= lb->payload_size) {
         
         const auto* rec = reinterpret_cast<const dlog::log_record*>(lb->payload + current_offset);
-        const auto* tuple = reinterpret_cast<const ermia::dbtuple*>(rec->data);
-        callback(rec->fid, rec->oid, rec->csn, tuple->size, (char*) &tuple->value_start);
+        // const auto* tuple = reinterpret_cast<const ermia::dbtuple*>(rec->data);
+        callback(rec);
+        // callback(rec->type, rec->fid, rec->oid, rec->csn, tuple->size, (char*) &tuple->value_start);
         // std::cout << "  Record #" << ++record_count << ":" << std::endl;
         // std::cout << "    Type: " << static_cast<int>(rec->type) 
         //           << " (Size: " << rec->size << ", FID: " << rec->fid 
@@ -90,7 +91,7 @@ void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::f
     return (void*) (lb->payload + lb->capacity);
 }
 
-void parse_log_stream(int fd, std::function<void(ermia::FID, ermia::OID, uint64_t, uint32_t, char*)> callback) {
+void parse_log_stream(int fd, std::function<void(ermia::dlog::log_record* rec)> callback) {
     char* buff = new char[IO_SIZE * 2]; 
     
     size_t current_page_id = 0;

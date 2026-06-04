@@ -7,6 +7,8 @@
 namespace ermia {
 
 std::atomic<uint32_t> log_counter{0};
+std::unordered_map<FID, UnorderedIndex*> index_fid_map;
+std::mutex index_fid_map_lock;
 
 dlog::tls_log *GetLog(uint32_t logid) {
   // XXX(tzwang): this lock may become a problem; should be safe to not use it -
@@ -46,6 +48,11 @@ Engine::Engine() {
 Engine::~Engine() { ermia::dlog::uninitialize(); }
 
 void Engine::Recovery() {
+    //   ermia::thread::Thread *thread = ermia::thread::GetThread(true);
+    // ALWAYS_ASSERT(thread);
+    // thread->StartTask(register_index);
+    // thread->Join();
+    // ermia::thread::PutThread(thread);
   std::cout << "[Recovery] Start\n";
   // TODO: multi thread recovery, each thread using a different id
   // TODO: scan to get min non durable csn, currently set a dummy one
@@ -65,10 +72,24 @@ void Engine::Recovery() {
     if (fd == -1) {
       break;
     }
-    parse_log_stream(fd, [&](FID f, OID o, uint64_t csn, uint32_t payload_size, char* data){
+
+    parse_log_stream(fd, [&](ermia::dlog::log_record* rec){
+      FID f = rec->fid;
+      OID o = rec->oid;
+      uint64_t csn = rec->csn;
+      const auto* tuple = reinterpret_cast<const ermia::dbtuple*>(rec->data);
+      uint32_t payload_size = tuple->size;
+      char* data = (char*) &tuple->value_start;
+
       if (csn < min_ndcsn) {
-        std::cout << "FID=" << f << ", OID=" << o << std::endl;
-        oidmgr->RecoveryUpsert(f, o, payload_size, data, csn);
+        // std::cout << "FID=" << f << ", OID=" << o << std::endl;
+        if (rec->type == ermia::dlog::log_record::INSERT_KEY) {
+          // insert to index
+          varstr v(data, payload_size);
+          index_fid_map[f]->RecoveryInsert(v, o);
+        } else {
+          oidmgr->RecoveryUpsert(f, o, payload_size, data, csn);
+        }
       }
       if (himarks.count(f) == 0) {
         himarks[f] = 0;
@@ -78,7 +99,8 @@ void Engine::Recovery() {
     });
   }
   // TODO: base on himarks to recreate allocators
-  // TODO: recreate indexes (hard code)
+  // TODO: recreate indexes
+
 }
 
 TableDescriptor *Engine::CreateTable(const char *name) {
@@ -103,7 +125,7 @@ TableDescriptor *Engine::CreateTable(const char *name) {
 }
 
 void Engine::LogIndexCreation(bool primary, FID table_fid, FID index_fid,
-                              const std::string &index_name) {
+                              const std::string &index_name, uint16_t type) {
   /*
   if (!sm_log::need_recovery) {
     // Note: this will insert to the log and therefore affect min_flush_lsn,
@@ -150,7 +172,10 @@ void Engine::CreateIndex(const uint16_t type, const char *table_name,
     td->AddSecondaryIndex(index, index_name);
   }
   FID index_fid = index->GetIndexFid();
-  LogIndexCreation(is_primary, td->GetTupleFid(), index_fid, index_name);
+  index_fid_map_lock.lock();
+  index_fid_map[index_fid] = index;
+  index_fid_map_lock.unlock();
+  LogIndexCreation(is_primary, td->GetTupleFid(), index_fid, index_name, type);
 }
 
 void UnorderedIndex::GetVersion(transaction *t, rc_t &rc, varstr &value,

@@ -105,6 +105,11 @@ bool ConcurrentMasstreeIndex::InsertOID(transaction *t, const varstr &key, OID o
   return inserted;
 }
 
+bool ConcurrentMasstreeIndex::RecoveryInsert(const varstr &key, OID oid) {
+  ConcurrentMasstree::insert_info_t ins_info;
+  return masstree_.insert_if_absent(key, oid, &ins_info);
+}
+
 rc_t ConcurrentMasstreeIndex::DoNodeRead(
     transaction *t, const ConcurrentMasstree::node_opaque_t *node,
     uint64_t version) {

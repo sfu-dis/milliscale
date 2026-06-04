@@ -17,6 +17,8 @@ struct ExHashIndex : public UnorderedIndex {
 
   bool InsertOID(transaction *t, const varstr &key, OID oid) override;
 
+  bool RecoveryInsert(const varstr &key, OID oid) override;
+
   inline void GetOID(const varstr &key, rc_t &rc, TXN::xid_context *xc, OID &out_oid) override {
     FixedLengthKey<KeyLength> *k = (FixedLengthKey<KeyLength> *)key.p;
     dash_eh::Value_t v;

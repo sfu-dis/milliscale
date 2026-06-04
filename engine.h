@@ -11,7 +11,7 @@ dlog::tls_log *GetLog();
 dlog::tls_log *GetLog(uint32_t logid);
 
 struct Engine {
-  void LogIndexCreation(bool primary, FID table_fid, FID index_fid, const std::string &index_name);
+  void LogIndexCreation(bool primary, FID table_fid, FID index_fid, const std::string &index_name, uint16_t type);
   template<uint32_t KeyLength = 8>
   void CreateIndex(const uint16_t type, const char *table_name, const std::string &index_name, bool is_primary);
 
