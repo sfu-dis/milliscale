@@ -48,65 +48,84 @@ Engine::Engine() {
 Engine::~Engine() { ermia::dlog::uninitialize(); }
 
 void Engine::Recovery() {
-    //   ermia::thread::Thread *thread = ermia::thread::GetThread(true);
-    // ALWAYS_ASSERT(thread);
-    // thread->StartTask(register_index);
-    // thread->Join();
-    // ermia::thread::PutThread(thread);
+
   std::cout << "[Recovery] Start\n";
-  // TODO: multi thread recovery, each thread using a different id
   // TODO: scan to get min non durable csn, currently set a dummy one
   uint64_t min_ndcsn = 1000000000;
-  std::map<FID, OID> himarks;
   DIR *logdir = opendir((ermia::config::log_dir + ermia::config::old_log_suffix).c_str());
   auto dfd = dirfd(logdir);
-  
-  char filename[sizeof("tlog-01234567-01234567")];
-  uint32_t id = 0;
-  uint32_t num = 0;
-  while (true) {
-    size_t n = snprintf(filename, sizeof(filename),
-                        "tlog-%08x-%08x", id, num);
-    num ++;
-    int fd = openat(dfd, filename, O_RDONLY);
-    if (fd == -1) {
-      break;
+  ALWAYS_ASSERT(dfd != -1);
+  std::vector<std::map<FID, OID>> himarks_vec(ermia::config::recovery_parallel_logs);
+  ermia::thread::Thread::Task recovery_task = [&] (char *tid) { 
+    size_t id = static_cast<size_t>(reinterpret_cast<intptr_t>(tid));
+    auto& himarks = himarks_vec[id];
+    char filename[sizeof("tlog-01234567-01234567")];
+    uint32_t num = 0;
+    for (;;) {
+      size_t n = snprintf(filename, sizeof(filename), "tlog-%08x-%08x", id, num);
+      int fd = openat(dfd, filename, O_RDONLY);
+      if (fd == -1) { break; }
+
+      parse_log_stream(fd, [&](ermia::dlog::log_record* rec){
+        FID f = rec->fid;
+        OID o = rec->oid;
+        uint64_t csn = rec->csn;
+        const auto* tuple = reinterpret_cast<const ermia::dbtuple*>(rec->data);
+        uint32_t payload_size = tuple->size;
+        char* data = (char*) &tuple->value_start;
+
+        if (csn < min_ndcsn) {
+          // std::cout << "FID=" << f << ", OID=" << o << std::endl;
+          if (rec->type == ermia::dlog::log_record::INSERT_KEY) {
+            // insert to index
+            varstr v(data, payload_size);
+            bool success = index_fid_map[f]->RecoveryInsert(v, o);
+            ASSERT(success);
+          } else {
+            // insert to table
+            auto aligned_size = align_up(payload_size + sizeof(dlog::log_record));
+            auto size_code = encode_size_aligned(aligned_size);
+            // TODO(jiatangz): Critical, compute the real offset
+            fat_ptr pdest = LSN::make(id, 0xbeef, num - 1, size_code).to_ptr();
+            oidmgr->RecoveryUpsert(f, o, payload_size, data, csn, pdest);
+          }
+          auto [it, inserted] = himarks.try_emplace(f, o); 
+          if (!inserted) {
+            it->second = std::max(it->second, o);
+          }
+        }
+      });
     }
+  };
 
-    parse_log_stream(fd, [&](ermia::dlog::log_record* rec){
-      FID f = rec->fid;
-      OID o = rec->oid;
-      uint64_t csn = rec->csn;
-      const auto* tuple = reinterpret_cast<const ermia::dbtuple*>(rec->data);
-      uint32_t payload_size = tuple->size;
-      char* data = (char*) &tuple->value_start;
-
-      if (csn < min_ndcsn) {
-        // std::cout << "FID=" << f << ", OID=" << o << std::endl;
-        if (rec->type == ermia::dlog::log_record::INSERT_KEY) {
-          // insert to index
-          varstr v(data, payload_size);
-          bool success = index_fid_map[f]->RecoveryInsert(v, o);
-          ASSERT(success);
-        } else {
-          auto aligned_size = align_up(payload_size + sizeof(dlog::log_record));
-          auto size_code = encode_size_aligned(aligned_size);
-          // TODO(jiatangz): Critical, compute the real offset
-          fat_ptr pdest = LSN::make(id, 0xbeef, num - 1, size_code).to_ptr();
-          oidmgr->RecoveryUpsert(f, o, payload_size, data, csn, pdest);
-        }
-        auto [it, inserted] = himarks.try_emplace(f, o); 
-        if (!inserted) {
-          it->second = std::max(it->second, o);
-        }
-      }
-    });
+  vector<ermia::thread::Thread*> recovery_threads;
+  for (size_t i = 0; i < ermia::config::recovery_parallel_logs; i++) {
+    ermia::thread::Thread *thread = ermia::thread::GetThread(true);
+    ALWAYS_ASSERT(thread);
+    recovery_threads.push_back(thread);
+    thread->StartTask(recovery_task, reinterpret_cast<char *>i);
   }
-  for (auto& p : himarks) {
+
+  for (auto* th : recovery_threads) {
+    th->Join();
+    ermia::thread::PutThread(th);
+  }
+  recovery_threads.clear();
+  
+  // Compute oid himarks
+  std::map<FID, OID> final_himarks;
+  for (auto& himark_map : himarks_vec) {
+    for (auto& p : himark_map) {
+      auto [it, inserted] = final_himarks.try_emplace(p.first, p.second);    
+      if (!inserted) {
+        it->second = std::max(it->second, p.second);
+      }
+    }
+  }
+  for (auto& p : final_himarks) {
     oidmgr->recreate_allocator(p.first, p.second);
   }
   dlog::current_csn = min_ndcsn;
-
 }
 
 TableDescriptor *Engine::CreateTable(const char *name) {

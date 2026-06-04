@@ -52,6 +52,8 @@ DEFINE_bool(enable_perf, false,
             "Whether to run Linux perf along with benchmark.");
 DEFINE_string(perf_record_event, "n/a", "Perf record event");
 DEFINE_bool(recovery, false, "Recovery from log.");
+DEFINE_uint32(recovery_parallel_logs, 1, "Number of parallel logs to recover");
+
 #if defined(SSN) || defined(SSI)
 DEFINE_bool(safesnap, false,
             "Whether to use the safe snapshot (for SSI and SSN only).");
@@ -191,7 +193,8 @@ void bench_main(int argc, char **argv,
   ermia::config::log_direct_io = FLAGS_log_direct_io;
   ermia::config::log_compress = FLAGS_log_compress;
   ermia::config::recovery = FLAGS_recovery;
-
+  ermia::config::recovery_parallel_logs = FLAGS_recovery_parallel_logs;
+  
   if (FLAGS_log_direct_io) {
     // Log buffer must be 4KB aligned if enabled
     LOG_IF(FATAL, PAGE_SIZE & (4 * ermia::config::MB))

@@ -82,6 +82,7 @@ extern bool index_probe_only;
 extern uint32_t flusher_thread;
 extern uint32_t n_combine_log;
 extern bool recovery;
+extern uint32_t recovery_parallel_logs;
 
 inline bool buff_hit() {
   thread_local foedus::assorted::UniformRandom uniform_rng;
