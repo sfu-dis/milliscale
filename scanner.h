@@ -61,7 +61,7 @@ void* parse_log_block_records(const void* block_ptr, const void* end_ptr, std::f
 
     while (current_offset + sizeof(dlog::log_record) <= lb->payload_size) {
         
-        const auto* rec = reinterpret_cast<const dlog::log_record*>(lb->payload + current_offset);
+        auto* rec = (dlog::log_record*)(lb->payload + current_offset);
         // const auto* tuple = reinterpret_cast<const ermia::dbtuple*>(rec->data);
         callback(rec);
         // callback(rec->type, rec->fid, rec->oid, rec->csn, tuple->size, (char*) &tuple->value_start);
