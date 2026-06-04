@@ -56,7 +56,7 @@ void Engine::Recovery() {
   std::cout << "[Recovery] Start\n";
   // TODO: multi thread recovery, each thread using a different id
   // TODO: scan to get min non durable csn, currently set a dummy one
-  uint64_t min_ndcsn = 1000000;
+  uint64_t min_ndcsn = 1000000000;
   std::map<FID, OID> himarks;
   DIR *logdir = opendir((ermia::config::log_dir + ermia::config::old_log_suffix).c_str());
   auto dfd = dirfd(logdir);
@@ -89,18 +89,23 @@ void Engine::Recovery() {
           bool success = index_fid_map[f]->RecoveryInsert(v, o);
           ASSERT(success);
         } else {
-          oidmgr->RecoveryUpsert(f, o, payload_size, data, csn);
+          auto aligned_size = align_up(payload_size + sizeof(dlog::log_record));
+          auto size_code = encode_size_aligned(aligned_size);
+          // TODO(jiatangz): Critical, compute the real offset
+          fat_ptr pdest = LSN::make(id, 0xbeef num - 1, size_code).to_ptr();
+          oidmgr->RecoveryUpsert(f, o, payload_size, data, csn, pdest);
         }
-      }
-      if (himarks.count(f) == 0) {
-        himarks[f] = 0;
-      } else {
-        himarks[f] = max(himarks[f], o);
+        auto [it, inserted] = himarks.try_emplace(f, o); 
+        if (!inserted) {
+          it->second = std::max(it->second, o);
+        }
       }
     });
   }
-  // TODO: base on himarks to recreate allocators
-  // TODO: recreate indexes
+  for (auto& p : himarks) {
+    oidmgr->recreate_allocator(p.first, p.second);
+  }
+  dlog::current_csn = min_ndcsn;
 
 }
 

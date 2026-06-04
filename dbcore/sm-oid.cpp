@@ -618,7 +618,7 @@ fat_ptr sm_oid_mgr::free_oid(FID f, OID o) {
   return rval;
 }
 
-void sm_oid_mgr::RecoveryUpsert(FID f, OID o, uint32_t payload_size, const char *value, uint64_t my_csn) {
+void sm_oid_mgr::RecoveryUpsert(FID f, OID o, uint32_t payload_size, const char *value, uint64_t my_csn, fat_ptr pdest) {
   // recreate_allocator(f, o);
   recreate_file(f);
   auto *ptr = oid_access(f, o);
@@ -650,11 +650,12 @@ start_over:
       return;
     }
 
-    new_object->SetNextPersistent(old_desc->GetNextPersistent());
+    new_object->SetNextPersistent(old_desc->GetPersistentAddress());
     new_object->SetNextVolatile(old_desc->GetNextVolatile());
   }
 install:
   fat_ptr csn_ptr = CSN::make(my_csn).to_ptr();
+  new_object->SetPersistentAddress(pdest);
   new_object->SetCSN(csn_ptr);
   if (__sync_bool_compare_and_swap(&ptr->_ptr, head._ptr, new_obj_ptr._ptr)) {
     // Recycle old head
