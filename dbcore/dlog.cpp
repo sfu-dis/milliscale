@@ -214,6 +214,7 @@ void tls_log::initialize(const char *log_dir, uint32_t log_id, uint32_t node,
   holes = 0;
   logbuf_offset = 0;
   active_logbuf = logbuf[0];
+  ((io_block*) active_logbuf)->num = 0;
 
   durable_lsn = 0;
   current_lsn = 0;
@@ -272,7 +273,7 @@ void tls_log::uninitialize() {
     uint64_t aligned_size = align_up_flush_size(logbuf_offset);
     current_lsn += (aligned_size - logbuf_offset);
     logbuf_offset = aligned_size;
-    issue_flush(active_logbuf, logbuf_offset);
+    issue_flush(active_logbuf, logbuf_size);
     poll_flush();
   }
   io_uring_queue_exit(&ring);
@@ -289,7 +290,7 @@ void tls_log::enqueue_flush() {
     uint64_t aligned_size = align_up_flush_size(logbuf_offset);
     current_lsn += (aligned_size - logbuf_offset);
     logbuf_offset = aligned_size;
-    issue_flush(active_logbuf, logbuf_offset);
+    issue_flush(active_logbuf, logbuf_size);
     if (ermia::config::sync_io) {
       poll_flush();
       iostate = IOState::Idle;
@@ -308,7 +309,7 @@ void tls_log::last_flush() {
     uint64_t aligned_size = align_up_flush_size(logbuf_offset);
     current_lsn += (aligned_size - logbuf_offset);
     logbuf_offset = aligned_size;
-    issue_flush(active_logbuf, logbuf_offset);
+    issue_flush(active_logbuf, logbuf_size);
     poll_flush();
     iostate = IOState::Idle;
   } else { // increase csn if no write transactions in the buffer
@@ -677,7 +678,7 @@ log_block *tls_log::allocate_log_block(uint32_t payload_size,
       uint64_t aligned_size = align_up_flush_size(logbuf_offset);
       current_lsn += (aligned_size - logbuf_offset);
       logbuf_offset = aligned_size;
-      issue_flush(active_logbuf, logbuf_offset);
+      issue_flush(active_logbuf, logbuf_size);
       // after flush, we will switch log buffer, which will reset current first
       // csn
       set_first_csn(block_csn); // set first csn
@@ -696,6 +697,7 @@ log_block *tls_log::allocate_log_block(uint32_t payload_size,
       // TODO(jiatang): chkpt, for S3 Express Onezone, issue copy then delete if data is large enough
     }
   }
+  ((io_block*) active_logbuf)->num ++;
 
   log_block *lb = (log_block *)(active_logbuf + logbuf_offset);
   logbuf_offset += alloc_size;

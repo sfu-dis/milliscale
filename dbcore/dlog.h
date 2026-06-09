@@ -245,8 +245,9 @@ struct tls_log {
   inline void switch_log_buffers() {
     uint32_t logbuf_idx = (active_logbuf == logbuf[0]) ? 1 : 0;
     active_logbuf = logbuf[logbuf_idx];
+    ((io_block*) active_logbuf)->num = 0;
     first_csns[logbuf_idx] = INVALID_CSN; // first csn set to invalid
-    logbuf_offset = 0;
+    logbuf_offset = sizeof(io_block);
   }
 
   void issue_read(int fd, char *buf, uint64_t size, uint64_t offset,

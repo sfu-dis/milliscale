@@ -166,7 +166,9 @@ rc_t transaction::si_commit() {
   // When allocate log block, will create csn, enqueue csn and set first/last csn
   // need to call it no matter log_size is 0
   lb = log->allocate_log_block(log_size, &lb_lsn, &segnum, this);
-
+  if (lb) {
+    lb->max_dep_csn = this->max_dependent_csn;
+  }
   // For read only transaction, it is possible that the transaction can be committed
   if (xc->end < ermia::pcommit::global_upto_csn) {
     log->tcommitter.dequeue_committed_xcts(true, true);
