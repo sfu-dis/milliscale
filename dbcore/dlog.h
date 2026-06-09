@@ -291,7 +291,11 @@ struct tls_log {
       return false;
     }
     uint32_t alloc_size = payload_size + sizeof(log_block);
-    return (!logbuf_offset) || (alloc_size + logbuf_offset > logbuf_size);
+    return nothing_in_logbuf() || (alloc_size + logbuf_offset > logbuf_size);
+  }
+
+  const bool nothing_in_logbuf() {
+    return logbuf_offset == sizeof(io_block);
   }
 
   void set_first_csn(uint64_t block_csn) {

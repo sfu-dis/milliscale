@@ -269,11 +269,11 @@ void tls_log::initialize(const char *log_dir, uint32_t log_id, uint32_t node,
 
 void tls_log::uninitialize() {
   std::lock_guard<std::mutex> lg(lock);
-  if (logbuf_offset) {
-    uint64_t aligned_size = align_up_flush_size(logbuf_offset);
+  if (!nothing_in_logbuf()) {
+    uint64_t aligned_size = logbuf_size;
     current_lsn += (aligned_size - logbuf_offset);
     logbuf_offset = aligned_size;
-    issue_flush(active_logbuf, logbuf_size);
+    issue_flush(active_logbuf, logbuf_offset);
     poll_flush();
   }
   io_uring_queue_exit(&ring);
@@ -286,11 +286,11 @@ void tls_log::enqueue_flush() {
     iostate = IOState::Idle;
   }
 
-  if (logbuf_offset) {
-    uint64_t aligned_size = align_up_flush_size(logbuf_offset);
+  if (!nothing_in_logbuf()) {
+    uint64_t aligned_size = logbuf_size;
     current_lsn += (aligned_size - logbuf_offset);
     logbuf_offset = aligned_size;
-    issue_flush(active_logbuf, logbuf_size);
+    issue_flush(active_logbuf, logbuf_offset);
     if (ermia::config::sync_io) {
       poll_flush();
       iostate = IOState::Idle;
@@ -305,11 +305,11 @@ void tls_log::last_flush() {
     iostate = IOState::Idle;
   }
 
-  if (logbuf_offset) {
-    uint64_t aligned_size = align_up_flush_size(logbuf_offset);
+  if (!nothing_in_logbuf()) {
+    uint64_t aligned_size = logbuf_size;
     current_lsn += (aligned_size - logbuf_offset);
     logbuf_offset = aligned_size;
-    issue_flush(active_logbuf, logbuf_size);
+    issue_flush(active_logbuf, logbuf_offset);
     poll_flush();
     iostate = IOState::Idle;
   } else { // increase csn if no write transactions in the buffer
@@ -668,17 +668,17 @@ log_block *tls_log::allocate_log_block(uint32_t payload_size,
   // or we need to create a new segment for this log block,
   // flush the active logbuf, and switch to the other logbuf.
   if (alloc_size + logbuf_offset > logbuf_size || create_new_segment) {
-    if (logbuf_offset) {
+    if (!nothing_in_logbuf()) {
       if (last_open_new_logbuf != std::chrono::steady_clock::time_point{}) {
         auto end = std::chrono::steady_clock::now();
         ++fill_buf_nb_times;
         fill_buf_tot_duration_us += std::chrono::duration_cast<std::chrono::microseconds>(end - last_open_new_logbuf).count();
       }
       // Pad to 4K boundary if dio is enabled
-      uint64_t aligned_size = align_up_flush_size(logbuf_offset);
+      uint64_t aligned_size = logbuf_size;
       current_lsn += (aligned_size - logbuf_offset);
       logbuf_offset = aligned_size;
-      issue_flush(active_logbuf, logbuf_size);
+      issue_flush(active_logbuf, logbuf_offset);
       // after flush, we will switch log buffer, which will reset current first
       // csn
       set_first_csn(block_csn); // set first csn
