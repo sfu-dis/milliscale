@@ -294,7 +294,7 @@ struct tls_log {
     return nothing_in_logbuf() || (alloc_size + logbuf_offset > logbuf_size);
   }
 
-  const bool nothing_in_logbuf() {
+  const bool nothing_in_logbuf() const {
     return logbuf_offset == sizeof(io_block);
   }
 
