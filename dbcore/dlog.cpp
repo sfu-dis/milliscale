@@ -212,9 +212,9 @@ void tls_log::initialize(const char *log_dir, uint32_t log_id, uint32_t node,
   LOG_IF(FATAL, segment_size > SEGMENT_MAX_SIZE)
       << "Unable to allocate log buffer";
   holes = 0;
-  logbuf_offset = 0;
   active_logbuf = logbuf[0];
   ((io_block*) active_logbuf)->num = 0;
+  logbuf_offset = sizeof(io_block);
 
   durable_lsn = 0;
   current_lsn = 0;
