@@ -52,7 +52,7 @@ Engine::~Engine() { ermia::dlog::uninitialize(); }
 void Engine::Recovery() {
 
   std::cout << "[Recovery] Start\n";
-  timer t;
+  util::timer t;
 
   std::vector<mfile> files;
   // map logid->[segment id, file idx in files]
