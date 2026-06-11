@@ -183,7 +183,7 @@ void Engine::Recovery() {
   }
   dlog::current_csn = 1 + *std::max_element(max_recovery_csn.begin(), max_recovery_csn.end());
 
-  for (uint32_t logid = 0; logid < ermia::config::worker_threads; i++) {
+  for (uint32_t logid = 0; logid < ermia::config::worker_threads; logid++) {
     GetLog(logid)->create_segment();
     GetLog(logid)->current_segment()->start_offset = 0;
   }
