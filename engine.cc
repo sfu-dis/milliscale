@@ -48,6 +48,7 @@ Engine::Engine() {
 
 Engine::~Engine() { ermia::dlog::uninitialize(); }
 
+// Call recovery after dlog init, so we can reload the segments
 void Engine::Recovery() {
 
   std::cout << "[Recovery] Start\n";
@@ -55,8 +56,29 @@ void Engine::Recovery() {
   // map logid->[segment id, file idx in files]
   std::map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>> segment_map;
   std::vector<uint64_t> durable_csns;
-  getFiles(ermia::config::log_dir + ermia::config::old_log_suffix, files);
+  getFiles(ermia::config::log_dir, files);
   parse_filenames(files, segment_map);
+
+  for (auto& logid_segs : segment_map) {
+    auto& logid = logid_segs.first;
+    auto& segs = logid_segs.second;
+    if (logid >= dlog::tlogs.size()) {
+      continue;
+    }
+    int dfd = -1;
+    if (ermia::config::enable_uring) {
+      DIR *logdir = opendir(dir);
+      ALWAYS_ASSERT(logdir);
+      dfd = dirfd(logdir);
+    }
+    for (auto& segid_fileid : segs){
+      auto& filename = files[segid_fileid.second].filename.c_str();
+      GetLog(logid)->segments.push_back(new ermia::dlog::segment(dfd, filename, ermia::config::log_direct_io));
+      GetLog(logid)->create_segment();
+      GetLog(logid)->current_segment()->start_offset = 0;
+    }
+  }
+
   const uint64_t IO_SIZE = ermia::config::log_buffer_kb * 1024;
   char* buff = new char[IO_SIZE * segment_map.size()];
 
@@ -85,7 +107,6 @@ void Engine::Recovery() {
     }
   }
 
-  std::cout << "upto csn = " << upto_csn << std::endl;
   std::vector<std::map<FID, OID>> himarks_vec(ermia::config::recovery_parallel_logs);
   std::vector<uint64_t> max_recovery_csn(ermia::config::recovery_parallel_logs, 0);
   std::atomic<uint64_t> next_idx{0};
@@ -132,6 +153,7 @@ void Engine::Recovery() {
         }
       });
     }
+    delete[] io_buff;
   };
 
   std::vector<ermia::thread::Thread*> recovery_threads;

@@ -223,9 +223,10 @@ void tls_log::initialize(const char *log_dir, uint32_t log_id, uint32_t node,
   // Create a new segment
   segments.reserve(
       16); // Each log will have at most 16 segments (base on fat_ptr)
-  create_segment();
-  current_segment()->start_offset = current_lsn;
-
+  if (!ermia::config::recovery) {
+    create_segment();
+    current_segment()->start_offset = current_lsn;
+  }
   DLOG(INFO) << "Log " << id << ": new segment " << segments.size() - 1
              << ", start lsn " << current_lsn;
 
