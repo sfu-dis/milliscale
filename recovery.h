@@ -46,6 +46,9 @@ int32_t read_page_from_file(const mfile& f, size_t page_size, off_t offset, void
     } 
     return bytes_read;
   } else {
+    Aws::S3::S3ClientConfiguration config;
+    Aws::S3::S3Client s3_client(config);
+
     Aws::S3::Model::GetObjectRequest request;
     request.SetBucket(f.bucket_name); // TODO
     request.SetKey(f.filename);
@@ -58,9 +61,8 @@ int32_t read_page_from_file(const mfile& f, size_t page_size, off_t offset, void
     auto outcome = s3_client.GetObject(request);
     uint64_t bytes_read = 0;
     if (outcome.IsSuccess()) {
-      auto& retrieved_object = uotcome.GetResultWithOwnership();
+      auto& retrieved_object = outcome.GetResultWithOwnership();
       auto& result_stream = retrieved_object.GetBody();
-
 
       result_stream.read(pointer, page_size);
       bytes_read = result_stream.gcount();
@@ -173,6 +175,8 @@ void getFiles(std::string& dir, std::string& bucket, std::vector<mfile>& files) 
       }
     }
   } else {
+    Aws::S3::S3ClientConfiguration config;
+    Aws::S3::S3Client s3_client(config);
     Aws::S3::Model::ListObjectsV2Request request;
     request.SetBucket(bucket);
     auto outcome = s3_client.ListObjectsV2(request);
@@ -180,9 +184,9 @@ void getFiles(std::string& dir, std::string& bucket, std::vector<mfile>& files) 
     if (outcome.IsSuccess()) {
       const auto& result = outcome.GetResult();
       const auto& objects = result.GetContents();
-
+      std::string key = object.GetKey();
       for (const auto& object : objects) {
-        files.push_back({files.size(), -1, object.GetKey(), bucket, object.GetSize()});
+        files.push_back({files.size(), -1, key, bucket, object.GetSize()});
       }
     }
   }
