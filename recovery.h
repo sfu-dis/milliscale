@@ -61,10 +61,10 @@ int32_t read_page_from_file(const mfile& f, size_t page_size, off_t offset, void
     auto outcome = s3_client.GetObject(request);
     uint64_t bytes_read = 0;
     if (outcome.IsSuccess()) {
-      auto& retrieved_object = outcome.GetResultWithOwnership();
+      const auto& retrieved_object = outcome.GetResultWithOwnership();
       auto& result_stream = retrieved_object.GetBody();
 
-      result_stream.read(pointer, page_size);
+      result_stream.read((char*)pointer, page_size);
       bytes_read = result_stream.gcount();
     }
     return bytes_read;
@@ -184,8 +184,8 @@ void getFiles(std::string& dir, std::string& bucket, std::vector<mfile>& files) 
     if (outcome.IsSuccess()) {
       const auto& result = outcome.GetResult();
       const auto& objects = result.GetContents();
-      std::string key = object.GetKey();
       for (const auto& object : objects) {
+        std::string key = object.GetKey();
         files.push_back({files.size(), -1, key, bucket, object.GetSize()});
       }
     }
