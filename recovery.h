@@ -50,7 +50,7 @@ int32_t read_page_from_file(const mfile& f, size_t page_size, off_t offset, void
     Aws::S3::S3Client s3_client(config);
 
     Aws::S3::Model::GetObjectRequest request;
-    request.SetBucket(f.bucket_name); // TODO
+    request.SetBucket(f.bucket_name); 
     request.SetKey(f.filename);
 
     long long end_offset = offset + page_size - 1;

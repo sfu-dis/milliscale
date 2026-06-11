@@ -52,6 +52,8 @@ Engine::~Engine() { ermia::dlog::uninitialize(); }
 void Engine::Recovery() {
 
   std::cout << "[Recovery] Start\n";
+  timer t;
+
   std::vector<mfile> files;
   // map logid->[segment id, file idx in files]
   std::map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>> segment_map;
@@ -187,6 +189,8 @@ void Engine::Recovery() {
     GetLog(logid)->create_segment();
     GetLog(logid)->current_segment()->start_offset = 0;
   }
+  auto recovery_time = t.lap_ms();
+  std::cout << "[Recovery time(ms)] " << recovery_time << std::endl;
 }
 
 TableDescriptor *Engine::CreateTable(const char *name) {
