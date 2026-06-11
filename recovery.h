@@ -11,8 +11,16 @@
 #include <optional>
 #include <regex>
 #include <filesystem>
+
+#include <aws/core/Aws.h>
+#include <aws/s3/S3Client.h>
+#include <aws/s3/model/ListObjectsV2Request.h>
+#include <aws/s3/model/ListObjectsV2Result.h>
+#include <aws/s3/model/GetObjectRequest.h>
+
 #include "tuple.h"
 #include "dbcore/dlog-tx.h"
+
 
 namespace fs = std::filesystem;
 
@@ -20,6 +28,7 @@ struct mfile {
   uint64_t id;
   int fd; // for ssd
   std::string filename;
+  std::string bucket_name;
   int64_t size;
 
   uint32_t log_id;
@@ -27,7 +36,7 @@ struct mfile {
 };
 
 int32_t read_page_from_file(const mfile& f, size_t page_size, off_t offset, void* pointer) {
-    
+  if (!ermia::config::enable_s3) {
     ssize_t bytes_read = pread(f.fd, pointer, page_size, offset);
 
     if (bytes_read == -1) {
@@ -35,8 +44,29 @@ int32_t read_page_from_file(const mfile& f, size_t page_size, off_t offset, void
                   << " (Offset: " << offset << ")" << std::endl;
         return -1;
     } 
-    // TODO(S3)
     return bytes_read;
+  } else {
+    Aws::S3::Model::GetObjectRequest request;
+    request.SetBucket(f.bucket_name); // TODO
+    request.SetKey(f.filename);
+
+    long long end_offset = offset + page_size - 1;
+    
+    std::stringstream range_stream;
+    range_stream << "bytes=" << offset << "-" << end_offset;
+    request.SetRange(range_stream.str().c_str());
+    auto outcome = s3_client.GetObject(request);
+    uint64_t bytes_read = 0;
+    if (outcome.IsSuccess()) {
+      auto& retrieved_object = uotcome.GetResultWithOwnership();
+      auto& result_stream = retrieved_object.GetBody();
+
+
+      result_stream.read(pointer, page_size);
+      bytes_read = result_stream.gcount();
+    }
+    return bytes_read;
+  }
 }
 
 std::optional<std::pair<uint64_t, uint64_t>> parseTLogFormat(const std::string& str) {
@@ -131,15 +161,30 @@ void parse_filenames(std::vector<mfile>& file_list,
   }
 }
 
-void getFiles(std::string dir, std::vector<mfile>& files) {
-  fs::path dir_path = dir; 
-  assert(fs::exists(dir_path) && fs::is_directory(dir_path));
-  for (const auto& entry : fs::directory_iterator(dir_path)) {
-    if (fs::is_regular_file(entry.status())) {
-      int64_t size = entry.file_size();
-      int fd = open(entry.path().c_str(), O_RDONLY);
-      files.push_back({files.size(), fd, entry.path().filename(), size});
+void getFiles(std::string& dir, std::string& bucket, std::vector<mfile>& files) {
+  if (!ermia::config::enable_s3){
+    fs::path dir_path = dir; 
+    assert(fs::exists(dir_path) && fs::is_directory(dir_path));
+    for (const auto& entry : fs::directory_iterator(dir_path)) {
+      if (fs::is_regular_file(entry.status())) {
+        int64_t size = entry.file_size();
+        int fd = open(entry.path().c_str(), O_RDONLY);
+        files.push_back({files.size(), fd, entry.path().filename(), "", size});
+      }
+    }
+  } else {
+    Aws::S3::Model::ListObjectsV2Request request;
+    request.SetBucket(bucket);
+    auto outcome = s3_client.ListObjectsV2(request);
+
+    if (outcome.IsSuccess()) {
+      const auto& result = outcome.GetResult();
+      const auto& objects = result.GetContents();
+
+      for (const auto& object : objects) {
+        files.push_back({files.size(), -1, object.GetKey(), bucket, object.GetSize()});
+      }
     }
   }
-  // TODO(S3)
+
 }

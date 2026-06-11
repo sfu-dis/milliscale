@@ -56,7 +56,7 @@ void Engine::Recovery() {
   // map logid->[segment id, file idx in files]
   std::map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>> segment_map;
   std::vector<uint64_t> durable_csns;
-  getFiles(ermia::config::log_dir, files);
+  getFiles(ermia::config::log_dir, ermia::config::s3_bucket_names[0], files);
   parse_filenames(files, segment_map);
 
   for (auto& logid_segs : segment_map) {
