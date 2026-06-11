@@ -67,12 +67,12 @@ void Engine::Recovery() {
     }
     int dfd = -1;
     if (ermia::config::enable_uring) {
-      DIR *logdir = opendir(dir);
+      DIR *logdir = opendir(ermia::config::log_dir);
       ALWAYS_ASSERT(logdir);
       dfd = dirfd(logdir);
     }
     for (auto& segid_fileid : segs){
-      auto& filename = files[segid_fileid.second].filename.c_str();
+      const char* filename = files[segid_fileid.second].filename.c_str();
       GetLog(logid)->segments.push_back(new ermia::dlog::segment(dfd, filename, ermia::config::log_direct_io));
       GetLog(logid)->create_segment();
       GetLog(logid)->current_segment()->start_offset = 0;
