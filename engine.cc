@@ -67,7 +67,7 @@ void Engine::Recovery() {
     }
     int dfd = -1;
     if (ermia::config::enable_uring) {
-      DIR *logdir = opendir(ermia::config::log_dir);
+      DIR *logdir = opendir(ermia::config::log_dir.c_str());
       ALWAYS_ASSERT(logdir);
       dfd = dirfd(logdir);
     }
