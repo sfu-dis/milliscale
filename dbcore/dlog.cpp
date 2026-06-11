@@ -733,7 +733,7 @@ void tls_log::enqueue_committed_xct(uint64_t csn, uint64_t max_dependent_csn, bo
   tcommitter._commit_queue->push_back(csn, max_dependent_csn, is_local_log);
 }
 
-segment::segment(int dfd, const char *segname, bool dio, bool trunc=true)
+segment::segment(int dfd, const char *segname, bool dio, bool trunc)
     : size(0), expected_size(0), append_count(0) {
   // [dio] ignore if storing in S3
   if (!ermia::config::enable_uring) {
