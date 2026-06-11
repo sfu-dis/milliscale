@@ -69,7 +69,7 @@ void Engine::Recovery() {
     auto file_id = last_seg.second;
     mfile& f = files[file_id];
     read_page_from_file(f, IO_SIZE, f.size - IO_SIZE, my_buff);
-    parse_page(my_buff, [&](ermia::dlog::log_block* lb){
+    parse_page(my_buff, f.size - IO_SIZE, [&](ermia::dlog::log_block* lb){
       durable_csns.push_back(lb->csn);
     });
   }
@@ -119,7 +119,7 @@ void Engine::Recovery() {
             // insert to table
             auto aligned_size = align_up(payload_size + sizeof(dlog::log_record));
             auto size_code = encode_size_aligned(aligned_size);
-            fat_ptr pdest = LSN::make(id, offset, num - 1, size_code).to_ptr();
+            fat_ptr pdest = LSN::make(file.log_id, offset, file.seg_num, size_code).to_ptr();
             oidmgr->RecoveryUpsert(f, o, payload_size, data, csn, pdest);
           }
           auto [it, inserted] = himarks.try_emplace(f, o); 
@@ -129,7 +129,7 @@ void Engine::Recovery() {
         }
       });
     }
-  }
+  };
 
   std::vector<ermia::thread::Thread*> recovery_threads;
   for (size_t i = 0; i < ermia::config::recovery_parallel_logs; i++) {

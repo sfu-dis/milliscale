@@ -21,6 +21,9 @@ struct mfile {
   int fd; // for ssd
   std::string filename;
   int64_t size;
+
+  uint32_t log_id;
+  uint32_t seg_num;
 };
 
 int32_t read_page_from_file(const mfile& f, size_t page_size, off_t offset, void* pointer) {
@@ -88,7 +91,7 @@ void* parse_log_block_records(const void* block_ptr, uint64_t offset, std::funct
 
 void parse_page(char* buff, uint64_t offset,
   std::function<void(ermia::dlog::log_block*)> block_callback=[](ermia::dlog::log_block*){}, 
-  std::function<void(ermia::dlog::log_record*)> rec_callback=[](ermia::dlog::log_record*, uint64_t){}) {
+  std::function<void(ermia::dlog::log_record*, uint64_t)> rec_callback=[](ermia::dlog::log_record*, uint64_t){}) {
 
   uint64_t block_num = *(uint64_t*) buff;
   char* next_lb = buff + sizeof(uint64_t);
@@ -102,7 +105,7 @@ void parse_page(char* buff, uint64_t offset,
 
 void parse_log(const mfile& file, char* buff, uint64_t page_size,
   std::function<void(ermia::dlog::log_block*)> block_callback=[](ermia::dlog::log_block*){}, 
-  std::function<void(ermia::dlog::log_record*)> rec_callback=[](ermia::dlog::log_record*, uint64_t){}) {
+  std::function<void(ermia::dlog::log_record*, uint64_t)> rec_callback=[](ermia::dlog::log_record*, uint64_t){}) {
   
   uint64_t offset = 0;
   while (offset < file.size){
@@ -118,6 +121,8 @@ void parse_filenames(const std::vector<mfile>& file_list,
   for (auto& f: file_list) {
     auto result = parseTLogFormat(f.filename);
     if (result) {
+      f.log_id = result->first;
+      f.seg_num = result->second;
       out_map[result->first].push_back({result->second, f.id});
     }
   }
