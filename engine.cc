@@ -2,7 +2,7 @@
 #include "index/btree_wrapper.h"
 #include "index/hash_wrapper.h"
 #include "index/masstree_wrapper.h"
-#include "scanner.h"
+#include "recovery.h"
 
 namespace ermia {
 
@@ -50,24 +50,58 @@ Engine::~Engine() { ermia::dlog::uninitialize(); }
 void Engine::Recovery() {
 
   std::cout << "[Recovery] Start\n";
-  // TODO: scan to get min non durable csn, currently set a dummy one
-  uint64_t min_ndcsn = 1000000000;
-  DIR *logdir = opendir((ermia::config::log_dir + ermia::config::old_log_suffix).c_str());
-  auto dfd = dirfd(logdir);
-  ALWAYS_ASSERT(dfd != -1);
+  std::vector<mfile> files;
+  // map logid->[segment id, file idx in files]
+  std::map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>> segment_map;
+  std::vector<uint64_t> durable_csns;
+  getFiles(ermia::config::log_dir + ermia::config::old_log_suffix, files);
+  parse_filenames(files, segment_map);
+  const uint64_t IO_SIZE = ermia::config::log_buffer_kb * 1024;
+  char* buff = new char[IO_SIZE * segment_map.size()];
+
+  // read the last IO block of each log, and parse the upto csn
+  for (auto& kv: segment_map) {
+    uint32_t i = 0;
+    char* my_buff = buff + (IO_SIZE * i);
+    i ++;
+    auto& segs = kv.second;
+    auto& last_seg = segs[segs.size() - 1];
+    auto file_id = last_seg.second;
+    mfile& f = files[file_id];
+    read_page_from_file(f, IO_SIZE, f.size - IO_SIZE, my_buff);
+    parse_page(my_buff, [&](ermia::dlog::log_block* lb){
+      durable_csns.push_back(lb->csn);
+    });
+  }
+  delete[] buff;
+
+  std::sort(durable_csns.begin(), durable_csns.end());
+  uint64_t upto_csn = durable_csns[durable_csns.size() - 1]; // [0..upto_csn] are durable
+  for (int i = 1; i < durable_csns.size(); i++) {
+    if (durable_csns[i] - 1 > durable_csns[i - 1]) {
+      upto_csn = durable_csns[i - 1];
+      break;
+    }
+  }
+
+  std::cout << "upto csn = " << upto_csn << std::endl;
   std::vector<std::map<FID, OID>> himarks_vec(ermia::config::recovery_parallel_logs);
+  std::atomic<uint64_t> next_idx{0};
   ermia::thread::Thread::Task recovery_task = [&] (char *tid) { 
     size_t id = static_cast<size_t>(reinterpret_cast<intptr_t>(tid));
     auto& himarks = himarks_vec[id];
-    char filename[sizeof("tlog-01234567-01234567")];
-    uint32_t num = 0;
+    char* io_buff = new char[IO_SIZE];
     for (;;) {
-      size_t n = snprintf(filename, sizeof(filename), "tlog-%08x-%08x", id, num);
-      num++;
-      int fd = openat(dfd, filename, O_RDONLY);
-      if (fd == -1) { break; }
-
-      parse_log_stream(fd, [&](ermia::dlog::log_record* rec, uint64_t offset){
+      uint64_t file_idx = next_idx.fetch_add(1);
+      if (file_idx >= files.size()) {
+        break;
+      }
+      auto& file = files[file_idx];
+      uint64_t dep_csn;
+      parse_log(file, io_buff, IO_SIZE, [&](ermia::dlog::log_block* lb) {
+        dep_csn = lb->max_dep_csn;
+      }, 
+      [&](ermia::dlog::log_record* rec, uint64_t offset){
         FID f = rec->fid;
         OID o = rec->oid;
         uint64_t csn = rec->csn;
@@ -75,8 +109,7 @@ void Engine::Recovery() {
         uint32_t payload_size = tuple->size;
         char* data = (char*) &tuple->value_start;
 
-        if (csn < min_ndcsn) {
-          // std::cout << "FID=" << f << ", OID=" << o << std::endl;
+        if (dep_csn <= upto_csn) {
           if (rec->type == ermia::dlog::log_record::INSERT_KEY) {
             // insert to index
             varstr v(data, payload_size);
@@ -96,7 +129,7 @@ void Engine::Recovery() {
         }
       });
     }
-  };
+  }
 
   std::vector<ermia::thread::Thread*> recovery_threads;
   for (size_t i = 0; i < ermia::config::recovery_parallel_logs; i++) {
@@ -125,7 +158,7 @@ void Engine::Recovery() {
   for (auto& p : final_himarks) {
     oidmgr->recreate_allocator(p.first, p.second);
   }
-  dlog::current_csn = min_ndcsn;
+  dlog::current_csn = upto_csn + 1;
 }
 
 TableDescriptor *Engine::CreateTable(const char *name) {
