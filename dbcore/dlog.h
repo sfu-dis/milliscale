@@ -100,7 +100,7 @@ struct segment {
 
   const static uint64_t DIRTY_BIT = 1ULL << 63;
   // ctor and dtor
-  segment(int dfd, const char *segname, bool dio);
+  segment(int dfd, const char *segname, bool dio, bool trunc=true);
   ~segment();
 };
 

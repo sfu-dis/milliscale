@@ -73,9 +73,7 @@ void Engine::Recovery() {
     }
     for (auto& segid_fileid : segs){
       const char* filename = files[segid_fileid.second].filename.c_str();
-      GetLog(logid)->segments.push_back(new ermia::dlog::segment(dfd, filename, ermia::config::log_direct_io));
-      GetLog(logid)->create_segment();
-      GetLog(logid)->current_segment()->start_offset = 0;
+      GetLog(logid)->segments.push_back(new ermia::dlog::segment(dfd, filename, ermia::config::log_direct_io, false));
     }
   }
 
@@ -184,6 +182,11 @@ void Engine::Recovery() {
     oidmgr->recreate_allocator(p.first, p.second);
   }
   dlog::current_csn = 1 + *std::max_element(max_recovery_csn.begin(), max_recovery_csn.end());
+
+  for (uint32_t logid = 0; logid < ermia::config::worker_threads; i++) {
+    GetLog(logid)->create_segment();
+    GetLog(logid)->current_segment()->start_offset = 0;
+  }
 }
 
 TableDescriptor *Engine::CreateTable(const char *name) {
