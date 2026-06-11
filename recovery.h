@@ -116,7 +116,7 @@ void parse_log(const mfile& file, char* buff, uint64_t page_size,
 }
 
 
-void parse_filenames(const std::vector<mfile>& file_list, 
+void parse_filenames(std::vector<mfile>& file_list, 
     std::map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>>& out_map) {
   for (auto& f: file_list) {
     auto result = parseTLogFormat(f.filename);

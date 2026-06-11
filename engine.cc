@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "engine.h"
 #include "index/btree_wrapper.h"
 #include "index/hash_wrapper.h"
@@ -86,6 +87,7 @@ void Engine::Recovery() {
 
   std::cout << "upto csn = " << upto_csn << std::endl;
   std::vector<std::map<FID, OID>> himarks_vec(ermia::config::recovery_parallel_logs);
+  std::vector<uint64_t> max_recovery_csn(ermia::config::recovery_parallel_logs, 0);
   std::atomic<uint64_t> next_idx{0};
   ermia::thread::Thread::Task recovery_task = [&] (char *tid) { 
     size_t id = static_cast<size_t>(reinterpret_cast<intptr_t>(tid));
@@ -110,6 +112,7 @@ void Engine::Recovery() {
         char* data = (char*) &tuple->value_start;
 
         if (dep_csn <= upto_csn) {
+          max_recovery_csn[id] = std::max(csn, max_recovery_csn[id]);
           if (rec->type == ermia::dlog::log_record::INSERT_KEY) {
             // insert to index
             varstr v(data, payload_size);
@@ -158,7 +161,7 @@ void Engine::Recovery() {
   for (auto& p : final_himarks) {
     oidmgr->recreate_allocator(p.first, p.second);
   }
-  dlog::current_csn = upto_csn + 1;
+  dlog::current_csn = 1 + *std::max_element(max_recovery_csn.begin(), max_recovery_csn.end());
 }
 
 TableDescriptor *Engine::CreateTable(const char *name) {
