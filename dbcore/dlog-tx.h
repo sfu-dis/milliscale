@@ -2,6 +2,7 @@
 
 #include "dlog-defs.h"
 #include "sm-oid.h"
+#include <filesystem>
 
 // Transaction-facing logging infrastructure that determines anything related to
 // manupulating the bytes recorded by dlog, such as log record format
@@ -118,7 +119,7 @@ inline static uint32_t flush_ddl_log(ddl_log::log_type t, FID first_fid, FID sec
   
   // TODO: S3 support
   int fd = GetDDLFD();
-  return bytes_written = pwrite(fd, lb, sizeof(ddl_log) + size, 0);
+  return pwrite(fd, lb, sizeof(ddl_log) + size, 0);
 }
 
 inline static uint32_t log_table(FID tuple_fid, FID key_fid, uint32_t size, const char* name) {

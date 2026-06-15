@@ -207,7 +207,7 @@ TableDescriptor *Engine::CreateTable(const char *name) {
     // char *log_space = (char *)malloc(sizeof(sm_tx_log));
     // ermia::sm_tx_log *log = ermia::logmgr->new_tx_log(log_space);
     td->Initialize();
-    ermia::dlog::log_table(td->GetTupleFid(), td->GetKeyFid(), td->GetName().length(), td->GetName().c_str())
+    ermia::dlog::log_table(td->GetTupleFid(), td->GetKeyFid(), td->GetName().length(), td->GetName().c_str());
   }
   return td;
 }
