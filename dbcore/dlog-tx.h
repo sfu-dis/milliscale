@@ -99,7 +99,7 @@ struct ddl_log {
 };
 
 // NO Lock protect
-int GetDDLFD() {
+static int GetDDLFD() {
 static int fd = -1;
   if (fd == -1) {
     std::filesystem::path dir = ermia::config::log_dir;
