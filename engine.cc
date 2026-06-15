@@ -207,9 +207,7 @@ TableDescriptor *Engine::CreateTable(const char *name) {
     // char *log_space = (char *)malloc(sizeof(sm_tx_log));
     // ermia::sm_tx_log *log = ermia::logmgr->new_tx_log(log_space);
     td->Initialize();
-    // log->log_table(td->GetTupleFid(), td->GetKeyFid(), td->GetName());
-    // log->commit(nullptr);
-    // free(log_space);
+    ermia::dlog::log_table(td->GetTupleFid(), td->GetKeyFid(), td->GetName().length(), td->GetName().c_str())
   }
   return td;
 }
@@ -232,6 +230,12 @@ void Engine::LogIndexCreation(bool primary, FID table_fid, FID index_fid,
     free(log_space);
   }
   */
+  if (primary) {
+    ermia::dlog::log_primary_index(table_fid, index_fid, index_name.size(), index_name.c_str());
+  } else {
+    ermia::dlog::log_secondary_index(table_fid, index_fid, index_name.size(), index_name.c_str());
+  }
+  
 }
 
 template <uint32_t KeyLength>

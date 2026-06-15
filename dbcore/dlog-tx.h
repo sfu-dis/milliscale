@@ -84,6 +84,55 @@ inline static uint32_t log_update(log_block *block, FID fid, OID oid, const char
 }
 
 
+struct ddl_log {
+  enum log_type:uint8_t {
+    TABLE_LOG,
+    PRIMARY_INDEX_LOG,
+    SECONDARY_INDEX_LOG,
+  };
+  log_type t;
+  FID first_fid;
+  FID second_fid;
+  uint32_t size;
+  char name[0];
+};
+
+// NO Lock protect
+int GetDDLFD() {
+static int fd = -1;
+  if (fd == -1) {
+    std::filesystem::path dir = ermia::config::log_dir;
+    std::filesystem::path file = dir / "ddl_log";
+    fd = open(file.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_FSYNC);
+  }
+  return fd;
+}
+
+// No CC, because currently we creaete all index in one thread
+inline static uint32_t flush_ddl_log(ddl_log::log_type t, FID first_fid, FID second_fid, uint32_t size, const char* name) {
+  auto lb = (ddl_log*) malloc(sizeof(ddl_log) + size);
+  lb->first_fid = first_fid;
+  lb->second_fid = second_fid;
+  lb->size = size;
+  memcpy(lb->name, name, size);
+  
+  // TODO: S3 support
+  int fd = GetDDLFD();
+  return bytes_written = pwrite(fd, lb, sizeof(ddl_log) + size, 0);
+}
+
+inline static uint32_t log_table(FID tuple_fid, FID key_fid, uint32_t size, const char* name) {
+  return flush_ddl_log(ddl_log::log_type::TABLE_LOG, tuple_fid, key_fid, size, name);
+}
+
+inline static uint32_t log_primary_index(FID table_fid, FID index_fid, uint32_t size, const char* name) {
+  return flush_ddl_log(ddl_log::log_type::PRIMARY_INDEX_LOG, table_fid, index_fid, size, name);
+}
+
+inline static uint32_t log_secondary_index(FID table_fid, FID index_fid, uint32_t size, const char* name) {
+  return flush_ddl_log(ddl_log::log_type::SECONDARY_INDEX_LOG, table_fid, index_fid, size, name);
+}
+
 }
 
 }  // namespace ermia
