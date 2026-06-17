@@ -14,9 +14,11 @@ struct Engine {
   void LogIndexCreation(bool primary, FID table_fid, FID index_fid, const std::string &index_name, uint16_t type);
   template<uint32_t KeyLength = 8>
   void CreateIndex(const uint16_t type, const char *table_name, const std::string &index_name, bool is_primary);
+  void RecreateIndex(const uint16_t type, FID table_fid, const std::string &index_name, bool is_primary, FID idx_fid);
 
   Engine();
   ~Engine();
+  void replayDDL();
 
   // All supported index types
   static const uint16_t kIndexMasstree = 0x1;

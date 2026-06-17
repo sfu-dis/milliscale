@@ -11,8 +11,8 @@ template <uint32_t KeyLength>
 struct ExHashIndex : public UnorderedIndex {
   dash_eh::Finger_EH<FixedLengthKey<KeyLength>> hash_table;
 
-  ExHashIndex(const char *table_name, bool primary)
-    : UnorderedIndex(table_name, primary), hash_table(64) {}
+  ExHashIndex(const char *table_name, bool primary, FID recovery_fid=-1)
+    : UnorderedIndex(table_name, primary, recovery_fid), hash_table(64) {}
   ~ExHashIndex() {}
 
   bool InsertOID(transaction *t, const varstr &key, OID oid) override;

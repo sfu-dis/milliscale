@@ -44,15 +44,47 @@ Engine::Engine() {
   sm_oid_mgr::create();
   ALWAYS_ASSERT(oidmgr);
   ermia::dlog::initialize();
+  if (ermia::config::recovery) {
+    db->Recovery();
+  }
 }
 
 Engine::~Engine() { ermia::dlog::uninitialize(); }
+
+void Engine::replayDDL() {
+  // DDL log is small, so to be simple, just read the entire file
+  int fd = ermia::dlog::GetDDLFD();
+  uint32_t buff_size = 16 * 1024;
+  char* ddl_buff = new char[buff_size];
+  int read_bytes = pread(fd, ddl_buff, buff_size, 0);
+  ASSERT(read_bytes < buff_size);
+  int parsed_bytes = 0;
+  char* ptr = ddl_buff;
+  while (parsed_bytes < read_bytes) {
+    auto lb = (ermia::dlog::ddl_log*) ptr;
+    std::string name(lb->name, lb->size);
+    if (lb->t == ermia::dlog::ddl_log::TABLE_LOG) {
+      auto *td = TableDescriptor::New(name);
+      td->Recover(lb->first_fid, lb->second_fid, 0);
+    } else if (lb->t == ermia::dlog::ddl_log::PRIMARY_INDEX_LOG) {
+      // TODO: log index type
+      RecreateIndex(kIndexMasstree, lb->first_fid, name, true, lb->second_fid);
+    } else {
+      RecreateIndex(kIndexMasstree, lb->first_fid, name, false, lb->second_fid);
+    }
+    parsed_bytes += lb->size + sizeof(ermia::dlog::ddl_log);
+    ptr += lb->size + sizeof(ermia::dlog::ddl_log);
+  }
+}
 
 // Call recovery after dlog init, so we can reload the segments
 void Engine::Recovery() {
 
   std::cout << "[Recovery] Start\n";
   util::timer t;
+
+  // Recovery ddl
+  replayDDL();
 
   std::vector<mfile> files;
   // map logid->[segment id, file idx in files]
@@ -182,6 +214,8 @@ void Engine::Recovery() {
   }
   for (auto& p : final_himarks) {
     oidmgr->recreate_allocator(p.first, p.second);
+    auto oarr = oidmgr->get_array(p.first);
+    oarr->ensure_size(oarr->alloc_size(p.second));
   }
   dlog::current_csn = 1 + *std::max_element(max_recovery_csn.begin(), max_recovery_csn.end());
 
@@ -270,6 +304,39 @@ void Engine::CreateIndex(const uint16_t type, const char *table_name,
   index_fid_map[index_fid] = index;
   index_fid_map_lock.unlock();
   LogIndexCreation(is_primary, td->GetTupleFid(), index_fid, index_name, type);
+}
+
+template <uint32_t KeyLength>
+void Engine::RecreateIndex(const uint16_t type, FID table_fid,
+                         const std::string &index_name, bool is_primary, FID idx_fid) {
+  auto *td = TableDescriptor::Get(table_fid);
+  ALWAYS_ASSERT(td);
+  UnorderedIndex *index = nullptr;
+
+  switch (type) {
+  case kIndexMasstree:
+    index = new ConcurrentMasstreeIndex(table_name, is_primary, idx_fid);
+    break;
+  case kIndexBTreeOLC:
+    index = new BTreeOLCIndex<KeyLength>(table_name, is_primary, idx_fid);
+    break;
+  case kIndexExHash:
+    index = new ExHashIndex<KeyLength>(table_name, is_primary, idx_fid);
+    break;
+  default:
+    LOG(FATAL) << "Unknown index type: " << type;
+    break;
+  }
+
+  if (is_primary) {
+    td->SetPrimaryIndex(index, index_name);
+  } else {
+    td->AddSecondaryIndex(index, index_name);
+  }
+  FID index_fid = index->GetIndexFid();
+  index_fid_map_lock.lock();
+  index_fid_map[index_fid] = index;
+  index_fid_map_lock.unlock();
 }
 
 void UnorderedIndex::GetVersion(transaction *t, rc_t &rc, varstr &value,
@@ -452,10 +519,15 @@ rc_t Table::Remove(transaction &t, OID oid) {
 
 ////////////////// End of Table interfaces //////////
 
-UnorderedIndex::UnorderedIndex(std::string table_name, bool is_primary)
+UnorderedIndex::UnorderedIndex(std::string table_name, bool is_primary, FID recovery_fid)
     : is_primary(is_primary) {
   table_descriptor = TableDescriptor::Get(table_name);
-  self_fid = oidmgr->create_file(true);
+  if (recovery_fid == -1) {
+    self_fid = oidmgr->create_file(true);
+  } else {
+    oidmgr->recreate_file(recovery_fid);
+    self_fid = recovery_fid;
+  }
 }
 
 // Explicit instantiations

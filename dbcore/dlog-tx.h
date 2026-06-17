@@ -104,7 +104,7 @@ static int fd = -1;
   if (fd == -1) {
     std::filesystem::path dir = ermia::config::log_dir;
     std::filesystem::path file = dir / "ddl_log";
-    fd = open(file.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_FSYNC);
+    fd = open(file.c_str(), O_RDWR | O_CREAT | O_APPEND | O_FSYNC, 0644);
   }
   return fd;
 }
@@ -112,6 +112,7 @@ static int fd = -1;
 // No CC, because currently we creaete all index in one thread
 inline static uint32_t flush_ddl_log(ddl_log::log_type t, FID first_fid, FID second_fid, uint32_t size, const char* name) {
   auto lb = (ddl_log*) malloc(sizeof(ddl_log) + size);
+  lb->t = t;
   lb->first_fid = first_fid;
   lb->second_fid = second_fid;
   lb->size = size;

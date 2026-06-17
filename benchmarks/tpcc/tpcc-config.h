@@ -1320,21 +1320,23 @@ class tpcc_bench_runner : public bench_runner {
  public:
   tpcc_bench_runner(ermia::Engine *db) : bench_runner(db) {
     // Register all tables and indexes with the engine
-    RegisterIndex(db, "customer",   "customer",         true);
-    RegisterIndex(db, "customer",   "customer_name_idx",false);
-    RegisterIndex(db, "district",   "district",         true);
-    RegisterIndex(db, "history",    "history",          true);
-    RegisterIndex(db, "item",       "item",             true);
-    RegisterIndex(db, "new_order",  "new_order",        true);
-    RegisterIndex(db, "oorder",     "oorder",           true);
-    RegisterIndex(db, "oorder",     "oorder_c_id_idx",  false);
-    RegisterIndex(db, "order_line", "order_line",       true);
-    RegisterIndex(db, "stock",      "stock",            true);
-    RegisterIndex(db, "stock_data", "stock_data",       true);
-    RegisterIndex(db, "nation",     "nation",           true);
-    RegisterIndex(db, "region",     "region",           true);
-    RegisterIndex(db, "supplier",   "supplier",         true);
-    RegisterIndex(db, "warehouse",  "warehouse",        true);
+    if (!ermia::config::recovery) {
+      RegisterIndex(db, "customer",   "customer",         true);
+      RegisterIndex(db, "customer",   "customer_name_idx",false);
+      RegisterIndex(db, "district",   "district",         true);
+      RegisterIndex(db, "history",    "history",          true);
+      RegisterIndex(db, "item",       "item",             true);
+      RegisterIndex(db, "new_order",  "new_order",        true);
+      RegisterIndex(db, "oorder",     "oorder",           true);
+      RegisterIndex(db, "oorder",     "oorder_c_id_idx",  false);
+      RegisterIndex(db, "order_line", "order_line",       true);
+      RegisterIndex(db, "stock",      "stock",            true);
+      RegisterIndex(db, "stock_data", "stock_data",       true);
+      RegisterIndex(db, "nation",     "nation",           true);
+      RegisterIndex(db, "region",     "region",           true);
+      RegisterIndex(db, "supplier",   "supplier",         true);
+      RegisterIndex(db, "warehouse",  "warehouse",        true);
+    }
   }
 
   virtual void prepare(char *) {

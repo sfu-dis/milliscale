@@ -9,7 +9,7 @@ struct UnorderedIndex {
   bool is_primary;
   FID self_fid;
 
-  UnorderedIndex(std::string table_name, bool is_primary);
+  UnorderedIndex(std::string table_name, bool is_primary, FID recovery_fid=-1);
   virtual ~UnorderedIndex() {}
   inline TableDescriptor *GetTableDescriptor() { return table_descriptor; }
   inline bool IsPrimary() { return is_primary; }
@@ -53,8 +53,8 @@ struct UnorderedIndex {
 
 // Base class for user-facing ordered index implementations
 struct OrderedIndex : public UnorderedIndex {
-  OrderedIndex(std::string table_name, bool is_primary)
-    : UnorderedIndex(table_name, is_primary) {}
+  OrderedIndex(std::string table_name, bool is_primary, FID recovery_fid=-1)
+    : UnorderedIndex(table_name, is_primary, recovery_fid) {}
   virtual ~OrderedIndex() {}
 
   struct ScanCallback {

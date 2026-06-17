@@ -11,8 +11,8 @@ template <uint32_t KeyLength>
 struct BTreeOLCIndex : public OrderedIndex {
   btreeolc::BTreeOLC<FixedLengthKey<KeyLength>, OID> btree;
 
-  BTreeOLCIndex(const char *table_name, bool primary)
-    : OrderedIndex(table_name, primary) {}
+  BTreeOLCIndex(const char *table_name, bool primary, FID recovery_fid=-1)
+    : OrderedIndex(table_name, primary, recovery_fid) {}
   ~BTreeOLCIndex() {}
 
   bool InsertOID(transaction *t, const varstr &key, OID oid) override;

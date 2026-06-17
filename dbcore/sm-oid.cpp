@@ -280,13 +280,7 @@ FID sm_oid_mgr::create_file(bool needs_alloc) {
  */
 void sm_oid_mgr::recreate_file(FID f) {
   if (file_exists(f)) {
-    // LOG(FATAL) << "File already exists. Is this a secondary index?";
-    return;
-  }
-
-  lock_file(f);
-  DEFER(unlock_file(f));
-  if (file_exists(f)) {
+    LOG(FATAL) << "File already exists. Is this a secondary index?";
     return;
   }
 
@@ -619,8 +613,6 @@ fat_ptr sm_oid_mgr::free_oid(FID f, OID o) {
 }
 
 void sm_oid_mgr::RecoveryUpsert(FID f, OID o, uint32_t payload_size, const char *value, uint64_t my_csn, fat_ptr pdest) {
-  // recreate_allocator(f, o);
-  recreate_file(f);
   auto *ptr = oid_access(f, o);
   fat_ptr head = NULL_PTR;
   varstr c(value, payload_size);
