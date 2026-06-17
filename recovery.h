@@ -168,7 +168,7 @@ void getFiles(std::string& dir, std::string& bucket, std::vector<mfile>& files) 
     fs::path dir_path = dir; 
     assert(fs::exists(dir_path) && fs::is_directory(dir_path));
     for (const auto& entry : fs::directory_iterator(dir_path)) {
-      if (fs::is_regular_file(entry.status())) {
+      if (fs::is_regular_file(entry.status()) && parseTLogFormat(entry.path().filename())) {
         int64_t size = entry.file_size();
         int fd = open(entry.path().c_str(), O_RDONLY);
         files.push_back({files.size(), fd, entry.path().filename(), "", size});
@@ -186,7 +186,9 @@ void getFiles(std::string& dir, std::string& bucket, std::vector<mfile>& files) 
       const auto& objects = result.GetContents();
       for (const auto& object : objects) {
         std::string key = object.GetKey();
-        files.push_back({files.size(), -1, key, bucket, object.GetSize()});
+        if (parseTLogFormat(key)) {
+          files.push_back({files.size(), -1, key, bucket, object.GetSize()});
+        }
       }
     }
   }
