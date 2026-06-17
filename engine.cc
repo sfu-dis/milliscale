@@ -45,7 +45,7 @@ Engine::Engine() {
   ALWAYS_ASSERT(oidmgr);
   ermia::dlog::initialize();
   if (ermia::config::recovery) {
-    db->Recovery();
+    Recovery();
   }
 }
 

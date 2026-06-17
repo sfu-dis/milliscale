@@ -57,7 +57,7 @@ struct ConcurrentMasstreeIndex : public OrderedIndex {
                          const ConcurrentMasstree::node_opaque_t *node,
                          uint64_t version);
 
-  ConcurrentMasstreeIndex(const char *table_name, bool primary, FID recovery_fid)
+  ConcurrentMasstreeIndex(const char *table_name, bool primary, FID recovery_fid=-1)
     : OrderedIndex(table_name, primary, recovery_fid) {}
   ~ConcurrentMasstreeIndex() {}
 
