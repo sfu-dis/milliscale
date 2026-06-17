@@ -312,16 +312,16 @@ void Engine::RecreateIndex(const uint16_t type, FID table_fid,
   auto *td = TableDescriptor::Get(table_fid);
   ALWAYS_ASSERT(td);
   UnorderedIndex *index = nullptr;
-  
+  const char* table_name = td->name.c_str();
   switch (type) {
   case kIndexMasstree:
-    index = new ConcurrentMasstreeIndex(td->name, is_primary, idx_fid);
+    index = new ConcurrentMasstreeIndex(table_name, is_primary, idx_fid);
     break;
   case kIndexBTreeOLC:
-    index = new BTreeOLCIndex<KeyLength>(td->name, is_primary, idx_fid);
+    index = new BTreeOLCIndex<KeyLength>(table_name, is_primary, idx_fid);
     break;
   case kIndexExHash:
-    index = new ExHashIndex<KeyLength>(td->name, is_primary, idx_fid);
+    index = new ExHashIndex<KeyLength>(table_name, is_primary, idx_fid);
     break;
   default:
     LOG(FATAL) << "Unknown index type: " << type;
