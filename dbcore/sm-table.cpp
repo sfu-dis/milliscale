@@ -40,7 +40,6 @@ void TableDescriptor::AddSecondaryIndex(UnorderedIndex *index, const std::string
 }
 
 void TableDescriptor::Recover(FID tuple_fid, FID aux_fid, OID himark) {
-  ALWAYS_ASSERT(tuple_fid == 0);
   this->tuple_fid = tuple_fid;
   aux_fid_ = aux_fid;
 
