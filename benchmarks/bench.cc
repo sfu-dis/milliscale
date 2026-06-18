@@ -205,13 +205,17 @@ void bench_runner::run() {
   // if (ermia::config::enable_chkpt) {
   //  ermia::chkptmgr->do_chkpt();  // this is synchronous
   // }
-
-  /*
+  std::thread* chkpt_thread;
   // Start checkpointer after database is ready
   if (ermia::config::enable_chkpt) {
-    ermia::chkptmgr->start_chkpt_thread();
+    chkpt_thread = new std::thread([&]() {
+      while (ermia::config::state != ermia::config::kStateShutdown) {
+        sleep(5);
+        sm_oid_mgr::Checkpoint();
+      }
+    });
   }
-  */
+  
   ermia::volatile_write(ermia::config::state, ermia::config::kStateForwardProcessing);
   for(auto& log: ermia::dlog::tlogs){
     log->reset_latency();
@@ -220,6 +224,9 @@ void bench_runner::run() {
 
   if (ermia::config::worker_threads) {
     start_measurement();
+  }
+  if (ermia::config::enable_chkpt) {
+    chkpt_thread->join();
   }
 }
 
@@ -518,9 +525,9 @@ void bench_runner::start_measurement() {
     }
   }
 
-  //if (ermia::config::enable_chkpt) {
-  //  delete ermia::chkptmgr;
-  //}
+  if (ermia::config::enable_chkpt) {
+   delete ermia::chkptmgr;
+  }
 
   std::cerr << "--- table statistics ---" << std::endl;
   for (std::map<std::string, ermia::UnorderedIndex *>::iterator it = open_tables.begin();

@@ -401,8 +401,8 @@ void sm_oid_mgr::create() {
 }
 
 void sm_oid_mgr::Checkpoint() {
-#if 0
-  ASSERT(!config::is_backup_srv());
+#if 1
+  // ASSERT(!config::is_backup_srv());
   // Now the real work. The format of a chkpt file is:
   // [number of indexes]
   // [primary index 1 name length, name, tuple/key FID, himark]

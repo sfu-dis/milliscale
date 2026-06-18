@@ -1,5 +1,6 @@
 #include <algorithm>
 #include "engine.h"
+#include "chkpt-manager.h"
 #include "index/btree_wrapper.h"
 #include "index/hash_wrapper.h"
 #include "index/masstree_wrapper.h"
@@ -46,6 +47,9 @@ Engine::Engine() {
   ermia::dlog::initialize();
   if (ermia::config::recovery) {
     Recovery();
+  }
+  if (ermia::config::enable_chkpt) {
+    CheckpointManager::create(1024*1024, new ThreadLocalUringEngine());
   }
 }
 
