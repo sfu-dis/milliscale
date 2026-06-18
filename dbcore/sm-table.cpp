@@ -57,10 +57,10 @@ void TableDescriptor::Recover(FID tuple_fid, FID aux_fid, OID himark) {
   ALWAYS_ASSERT(oidmgr->file_exists(aux_fid));
   aux_array_ = oidmgr->get_array(aux_fid_);
 
-  if (himark > 0) {
-    tuple_array->ensure_size(tuple_array->alloc_size(himark));
-    aux_array_->ensure_size(aux_array_->alloc_size(himark));
-    oidmgr->recreate_allocator(tuple_fid, himark);
-  }
+  // FIXME(jiatangz): Real himark requires a log scan, hard code to 32MB for now
+  tuple_array->ensure_size(tuple_array->alloc_size(32*config::MB));
+  aux_array_->ensure_size(aux_array_->alloc_size(32*config::MB));
+  // oidmgr->recreate_allocator(tuple_fid, himark);
+  
 }
 }  // namespace ermia
