@@ -14,6 +14,8 @@
 
 namespace ermia {
 
+class CheckpointManager;
+
 CheckpointManager* chkptmgr;
 
 class CheckpointManager {

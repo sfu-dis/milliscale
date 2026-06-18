@@ -211,7 +211,7 @@ void bench_runner::run() {
     chkpt_thread = new std::thread([&]() {
       while (ermia::config::state != ermia::config::kStateShutdown) {
         sleep(5);
-        sm_oid_mgr::Checkpoint();
+	ermia::oidmgr->Checkpoint();
       }
     });
   }
@@ -525,9 +525,9 @@ void bench_runner::start_measurement() {
     }
   }
 
-  if (ermia::config::enable_chkpt) {
-   delete ermia::chkptmgr;
-  }
+  // if (ermia::config::enable_chkpt) {
+   // delete ermia::chkptmgr;
+  // }
 
   std::cerr << "--- table statistics ---" << std::endl;
   for (std::map<std::string, ermia::UnorderedIndex *>::iterator it = open_tables.begin();
