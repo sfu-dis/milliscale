@@ -541,9 +541,9 @@ void sm_oid_mgr::create() {
 
 void sm_oid_mgr::Checkpoint() {
   ALWAYS_ASSERT(chkptmgr);
+  uint64_t upto_csn = ermia::pcommit::global_upto_csn.load(std::memory_order_acquire);
 
-  ChkptHeader header{kCheckpointMagic, kCheckpointVersion, 0,
-                     dlog::current_csn.load(std::memory_order_acquire)};
+  ChkptHeader header{kCheckpointMagic, kCheckpointVersion, 0, upto_csn};
   chkpt_write(header);
 
   uint32_t ntables = static_cast<uint32_t>(TableDescriptor::name_map.size());
@@ -596,7 +596,7 @@ void sm_oid_mgr::Checkpoint() {
           ptr = oid_get(tuple_array, oid);
           continue;
         }
-        if (csn.asi_type() == fat_ptr::ASI_XID) {
+        if (csn.asi_type() == fat_ptr::ASI_XID || csn.offset() >= upto_csn) {
           ptr = obj->GetNextVolatile();
           continue;
         }
