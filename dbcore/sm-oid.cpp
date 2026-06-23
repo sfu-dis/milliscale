@@ -326,6 +326,12 @@ void oid_array::ensure_size(size_t n) {
   _backing_store.ensure_size(OFFSETOF(oid_array, _entries[n]));
 }
 
+void sm_oid_mgr::ensure_file_size(FID f, size_t n) {
+  lock_file(f);
+  DEFER(unlock_file(f));
+  get_array(f)->ensure_size(n);
+}
+
 sm_oid_mgr::sm_oid_mgr() {
   /* Bootstrap the OBJARRAY, which contains everything (including
      itself). Then seed it with OID arrays for allocators and
@@ -567,8 +573,10 @@ void sm_oid_mgr::Checkpoint() {
   for (auto &fm : TableDescriptor::name_map) {
     TableDescriptor *td = fm.second;
     oid_array *tuple_array = td->GetTupleArray();
-    oid_array *key_array = td->GetKeyArray();
     OID tuple_himark = get_allocator(td->GetTupleFid())->head.hiwater_mark;
+
+    ensure_file_size(td->GetKeyFid(), tuple_himark + 1);
+    oid_array *key_array = td->GetKeyArray();
 
     std::vector<ChkptRecordImage> records;
     for (OID oid = 0; oid < tuple_himark; oid++) {
@@ -697,9 +705,11 @@ bool sm_oid_mgr::RecoverCheckpoint() {
     ALWAYS_ASSERT(td);
     oid_array *tuple_array = td->GetTupleArray();
     oid_array *key_array = td->GetKeyArray();
-    tuple_array->ensure_size(section.tuple_himark + 1);
-    key_array->ensure_size(section.tuple_himark + 1);
+    // tuple_array->ensure_size(section.tuple_himark + 1);
+    // key_array->ensure_size(section.tuple_himark + 1);
 
+    ensure_file_size(section.tuple_fid, section.tuple_himark + 1);
+    ensure_file_size(section.key_fid, section.tuple_himark + 1);
     for (uint64_t r = 0; r < section.nrecords; r++) {
       ChkptTupleRecord rec{};
       if (!chkpt_read(in, rec)) return false;

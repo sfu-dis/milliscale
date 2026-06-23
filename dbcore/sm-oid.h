@@ -281,6 +281,7 @@ struct sm_oid_mgr {
   }
   inline void lock_file(FID f) { mutexen[f % MUTEX_COUNT].lock(); }
   inline void unlock_file(FID f) { mutexen[f % MUTEX_COUNT].unlock(); }
+  void ensure_file_size(FID f, size_t n);
   inline fat_ptr *oid_access(FID f, OID o) { return get_array(f)->get(o); }
   inline bool file_exists(FID f) { return files->get(f)->offset(); }
 

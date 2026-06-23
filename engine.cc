@@ -241,10 +241,9 @@ void Engine::Recovery() {
   }
   uint64_t log_recovered_csn =
       1 + *std::max_element(max_recovery_csn.begin(), max_recovery_csn.end());
-  dlog::current_csn.store(
+  dlog::current_csn.store( 2*
       std::max(dlog::current_csn.load(std::memory_order_relaxed),
-               log_recovered_csn),
-      std::memory_order_relaxed);
+               log_recovered_csn));
 
   for (uint32_t logid = 0; logid < ermia::config::worker_threads; logid++) {
     GetLog(logid)->create_segment();
@@ -374,7 +373,7 @@ void UnorderedIndex::GetVersion(transaction *t, rc_t &rc, varstr &value,
                                            oid, t->GetXIDContext());
   volatile_write(rc._val,
                  tuple ? t->DoTupleRead(tuple, &value)._val : RC_FALSE);
-
+  ASSERT(rc._val == RC_TRUE);
 #ifndef SSN
   ASSERT(rc._val == RC_FALSE || rc._val == RC_TRUE);
 #endif
@@ -427,6 +426,8 @@ rc_t UnorderedIndex::InsertRecord(transaction *t, const varstr &key,
   ASSERT((char *)key.data() == (char *)&key + sizeof(varstr));
   if (!InsertOID(t, key, oid)) {
     if (config::enable_chkpt) {
+      oidmgr->ensure_file_size(table_descriptor->GetKeyFid(), oid + 1);
+
       volatile_write(table_descriptor->GetKeyArray()->get(oid)->_ptr, 0);
     }
     return rc_t{RC_ABORT_INTERNAL};
@@ -440,8 +441,8 @@ rc_t UnorderedIndex::InsertRecord(transaction *t, const varstr &key,
     varstr *new_key = (varstr *)MM::allocate(sizeof(varstr) + key.size());
     new (new_key) varstr((char *)new_key + sizeof(varstr), 0);
     new_key->copy_from(&key);
+    oidmgr->ensure_file_size(table_descriptor->GetKeyFid(), oid + 1);
     auto *key_array = table_descriptor->GetKeyArray();
-    key_array->ensure_size(oid);
     oidmgr->oid_put(key_array, oid,
                     fat_ptr::make((void *)new_key, INVALID_SIZE_CODE));
   }
@@ -468,6 +469,7 @@ rc_t UnorderedIndex::InsertColdRecord(transaction *t, const varstr &key,
   ASSERT((char *)key.data() == (char *)&key + sizeof(varstr));
   if (!InsertOID(t, key, oid)) {
     if (config::enable_chkpt) {
+      oidmgr->ensure_file_size(table_descriptor->GetKeyFid(), oid + 1);
       volatile_write(table_descriptor->GetKeyArray()->get(oid)->_ptr, 0);
     }
     return rc_t{RC_ABORT_INTERNAL};
@@ -482,7 +484,8 @@ rc_t UnorderedIndex::InsertColdRecord(transaction *t, const varstr &key,
     new (new_key) varstr((char *)new_key + sizeof(varstr), 0);
     new_key->copy_from(&key);
     auto *key_array = table_descriptor->GetKeyArray();
-    key_array->ensure_size(oid);
+    oidmgr->ensure_file_size(table_descriptor->GetKeyFid(), oid + 1);
+
     oidmgr->oid_put(key_array, oid,
                     fat_ptr::make((void *)new_key, INVALID_SIZE_CODE));
   }
