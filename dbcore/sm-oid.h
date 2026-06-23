@@ -121,6 +121,7 @@ struct sm_oid_mgr {
      transaction commits and its location is properly recorded.
    */
   void Checkpoint();
+  bool RecoverCheckpoint();
 
   /* Create a new file and return its FID. If [needs_alloc]=true,
      the new file will be managed by an allocator and its FID can be

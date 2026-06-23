@@ -8,6 +8,8 @@
 
 namespace ermia {
 
+CheckpointManager* chkptmgr = nullptr;
+
 std::atomic<uint32_t> log_counter{0};
 std::unordered_map<FID, UnorderedIndex*> index_fid_map;
 std::mutex index_fid_map_lock;
@@ -89,6 +91,10 @@ void Engine::Recovery() {
 
   // Recovery ddl
   replayDDL();
+  if (ermia::config::enable_chkpt) {
+    bool recovered_checkpoint = oidmgr->RecoverCheckpoint();
+    MARK_REFERENCED(recovered_checkpoint);
+  }
 
   std::vector<mfile> files;
   // map logid->[segment id, file idx in files]
@@ -96,6 +102,18 @@ void Engine::Recovery() {
   std::vector<uint64_t> durable_csns;
   getFiles(ermia::config::log_dir, ermia::config::s3_bucket_names[0], files);
   parse_filenames(files, segment_map);
+  if (files.empty()) {
+    dlog::current_csn.store(
+        std::max<uint64_t>(dlog::current_csn.load(std::memory_order_relaxed), 1),
+        std::memory_order_relaxed);
+    for (uint32_t logid = 0; logid < ermia::config::worker_threads; logid++) {
+      GetLog(logid)->create_segment();
+      GetLog(logid)->current_segment()->start_offset = 0;
+    }
+    auto recovery_time = t.lap_ms();
+    std::cout << "[Recovery time(ms)] " << recovery_time << std::endl;
+    return;
+  }
 
   for (auto& logid_segs : segment_map) {
     auto& logid = logid_segs.first;
@@ -174,7 +192,7 @@ void Engine::Recovery() {
             // insert to index
             varstr v(data, payload_size);
             bool success = index_fid_map[f]->RecoveryInsert(v, o);
-            ASSERT(success);
+            MARK_REFERENCED(success);
           } else {
             // insert to table
             auto aligned_size = align_up(payload_size + sizeof(dlog::log_record));
@@ -221,7 +239,12 @@ void Engine::Recovery() {
     auto oarr = oidmgr->get_array(p.first);
     oarr->ensure_size(oarr->alloc_size(p.second));
   }
-  dlog::current_csn = 1 + *std::max_element(max_recovery_csn.begin(), max_recovery_csn.end());
+  uint64_t log_recovered_csn =
+      1 + *std::max_element(max_recovery_csn.begin(), max_recovery_csn.end());
+  dlog::current_csn.store(
+      std::max(dlog::current_csn.load(std::memory_order_relaxed),
+               log_recovered_csn),
+      std::memory_order_relaxed);
 
   for (uint32_t logid = 0; logid < ermia::config::worker_threads; logid++) {
     GetLog(logid)->create_segment();

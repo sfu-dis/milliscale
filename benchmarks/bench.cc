@@ -210,8 +210,9 @@ void bench_runner::run() {
   if (ermia::config::enable_chkpt) {
     chkpt_thread = new std::thread([&]() {
       while (ermia::config::state != ermia::config::kStateShutdown) {
-        sleep(5);
-	ermia::oidmgr->Checkpoint();
+        sleep(3);
+      std::cout << "checkpointing\n";
+        ermia::oidmgr->Checkpoint();
       }
     });
   }

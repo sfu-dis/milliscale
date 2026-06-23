@@ -6,17 +6,20 @@
 #include <cstring>
 #include <fcntl.h>
 #include <functional>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <unistd.h>
 #include <vector>
 
+#include "dbcore/sm-config.h"
+
 namespace ermia {
 
 class CheckpointManager;
 
-CheckpointManager* chkptmgr;
+extern CheckpointManager* chkptmgr;
 
 class CheckpointManager {
 public:
@@ -76,7 +79,9 @@ private:
 
     if (buffer_offset_ > 0) {
       if (current_fd_ == -1) {
-        std::string filename = std::to_string(counter_) + ".chkpt";
+        std::filesystem::path filename =
+            std::filesystem::path(config::log_dir) /
+            (std::to_string(counter_) + ".chkpt");
         current_fd_ =
             ::open(filename.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         file_offset_ = 0;
