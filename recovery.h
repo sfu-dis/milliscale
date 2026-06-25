@@ -135,6 +135,73 @@ void parse_page(char* buff, uint64_t offset,
   }
 }
 
+uint64_t page_first_csn(char* buff) {
+  uint64_t block_num = *(uint64_t*) buff;
+  if (!block_num) {
+    return 0;
+  }
+
+  auto* lb = (ermia::dlog::log_block*) (buff + sizeof(uint64_t));
+  return lb->csn;
+}
+
+uint64_t find_first_replay_page(const mfile& file, char* buff, uint64_t page_size,
+                                uint64_t target_csn) {
+  if (target_csn <= 1) {
+    return 0;
+  }
+
+  uint64_t npages = (file.size + page_size - 1) / page_size;
+  uint64_t lo = 0;
+  uint64_t hi = npages;
+  uint64_t candidate = 0;
+
+  while (lo < hi) {
+    uint64_t mid = lo + ((hi - lo) / 2);
+    uint64_t offset = mid * page_size;
+    int32_t bytes = read_page_from_file(file, page_size, offset, buff);
+    if (bytes <= 0) {
+      hi = mid;
+      continue;
+    }
+
+    uint64_t first_csn = page_first_csn(buff);
+    if (first_csn && first_csn <= target_csn) {
+      candidate = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+
+  uint64_t replay_offset = candidate * page_size;
+  return replay_offset < static_cast<uint64_t>(file.size)
+             ? replay_offset
+             : static_cast<uint64_t>(file.size);
+}
+
+void parse_page_from_csn(char* buff, uint64_t offset, uint64_t target_csn,
+  std::function<void(ermia::dlog::log_block*)> block_callback=[](ermia::dlog::log_block*){},
+  std::function<void(ermia::dlog::log_record*, uint64_t)> rec_callback=[](ermia::dlog::log_record*, uint64_t){}) {
+
+  uint64_t block_num = *(uint64_t*) buff;
+  char* next_lb = buff + sizeof(uint64_t);
+
+  while (block_num) {
+    auto* lb = (ermia::dlog::log_block*) next_lb;
+    char* cur_lb = next_lb;
+    next_lb = lb->payload + lb->capacity;
+    block_num --;
+
+    if (lb->csn < target_csn) {
+      continue;
+    }
+
+    block_callback(lb);
+    parse_log_block_records(cur_lb, offset + (uint64_t)(cur_lb - buff), rec_callback);
+  }
+}
+
 void parse_log(const mfile& file, char* buff, uint64_t page_size,
   std::function<void(ermia::dlog::log_block*)> block_callback=[](ermia::dlog::log_block*){}, 
   std::function<void(ermia::dlog::log_record*, uint64_t)> rec_callback=[](ermia::dlog::log_record*, uint64_t){}) {
@@ -143,6 +210,22 @@ void parse_log(const mfile& file, char* buff, uint64_t page_size,
   while (offset < file.size){
     uint64_t bytes = read_page_from_file(file, page_size, offset, buff);
     parse_page(buff, offset, block_callback, rec_callback);
+    offset += bytes;
+  }
+}
+
+void parse_log_from_csn(const mfile& file, char* buff, uint64_t page_size,
+  uint64_t target_csn,
+  std::function<void(ermia::dlog::log_block*)> block_callback=[](ermia::dlog::log_block*){},
+  std::function<void(ermia::dlog::log_record*, uint64_t)> rec_callback=[](ermia::dlog::log_record*, uint64_t){}) {
+
+  uint64_t offset = find_first_replay_page(file, buff, page_size, target_csn);
+  while (offset < static_cast<uint64_t>(file.size)) {
+    int32_t bytes = read_page_from_file(file, page_size, offset, buff);
+    if (bytes <= 0) {
+      break;
+    }
+    parse_page_from_csn(buff, offset, target_csn, block_callback, rec_callback);
     offset += bytes;
   }
 }

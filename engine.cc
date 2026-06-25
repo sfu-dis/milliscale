@@ -91,9 +91,11 @@ void Engine::Recovery() {
 
   // Recovery ddl
   replayDDL();
+  uint64_t replay_start_csn = dlog::current_csn.load(std::memory_order_relaxed);
   if (ermia::config::enable_chkpt) {
     bool recovered_checkpoint = oidmgr->RecoverCheckpoint();
     MARK_REFERENCED(recovered_checkpoint);
+    replay_start_csn = dlog::current_csn.load(std::memory_order_relaxed);
   }
 
   std::vector<mfile> files;
@@ -175,7 +177,8 @@ void Engine::Recovery() {
       }
       auto& file = files[file_idx];
       uint64_t dep_csn;
-      parse_log(file, io_buff, IO_SIZE, [&](ermia::dlog::log_block* lb) {
+      parse_log_from_csn(file, io_buff, IO_SIZE, replay_start_csn,
+      [&](ermia::dlog::log_block* lb) {
         dep_csn = lb->max_dep_csn;
       }, 
       [&](ermia::dlog::log_record* rec, uint64_t offset){
@@ -236,14 +239,14 @@ void Engine::Recovery() {
   }
   for (auto& p : final_himarks) {
     oidmgr->recreate_allocator(p.first, p.second);
-    auto oarr = oidmgr->get_array(p.first);
-    oarr->ensure_size(oarr->alloc_size(p.second));
+    oidmgr->ensure_file_size(p.first, p.second + 1);
   }
   uint64_t log_recovered_csn =
       1 + *std::max_element(max_recovery_csn.begin(), max_recovery_csn.end());
-  dlog::current_csn.store( 2*
+  dlog::current_csn.store(
       std::max(dlog::current_csn.load(std::memory_order_relaxed),
-               log_recovered_csn));
+               log_recovered_csn),
+      std::memory_order_relaxed);
 
   for (uint32_t logid = 0; logid < ermia::config::worker_threads; logid++) {
     GetLog(logid)->create_segment();
