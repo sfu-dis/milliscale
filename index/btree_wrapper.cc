@@ -15,11 +15,7 @@ bool BTreeOLCIndex<KeyLength>::InsertOID(transaction *t, const varstr &key, OID 
   if (inserted) {
     t->LogIndexInsert(this, oid, &key);
     if (config::enable_chkpt) {
-      auto *td = GetTableDescriptor();
-      oidmgr->ensure_file_size(td->GetKeyFid(), oid + 1);
-      auto *key_array = td->GetKeyArray();
-
-      volatile_write(key_array->get(oid)->_ptr, 0);
+      StoreKeyForCheckpoint(oid, key);
     }
   }
   return inserted;

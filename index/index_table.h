@@ -39,6 +39,7 @@ struct UnorderedIndex {
 
   // Map a key to an existing OID. Could be used for primary or secondary index.
   virtual bool InsertOID(transaction *t, const varstr &key, OID oid) = 0;
+  void StoreKeyForCheckpoint(OID oid, const varstr &key);
 
   virtual size_t Size() = 0;
 

@@ -552,6 +552,15 @@ rc_t Table::Remove(transaction &t, OID oid) {
 
 ////////////////// End of Table interfaces //////////
 
+void UnorderedIndex::StoreKeyForCheckpoint(OID oid, const varstr &key) {
+  oidmgr->ensure_file_size(self_fid, oid + 1);
+  varstr *new_key = (varstr *)MM::allocate(sizeof(varstr) + key.size());
+  new (new_key) varstr((char *)new_key + sizeof(varstr), 0);
+  new_key->copy_from(&key);
+  oidmgr->oid_put(oidmgr->get_array(self_fid), oid,
+                  fat_ptr::make((void *)new_key, INVALID_SIZE_CODE));
+}
+
 UnorderedIndex::UnorderedIndex(std::string table_name, bool is_primary, FID recovery_fid)
     : is_primary(is_primary) {
   table_descriptor = TableDescriptor::Get(table_name);
