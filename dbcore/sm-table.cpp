@@ -60,10 +60,7 @@ void TableDescriptor::Recover(FID tuple_fid, FID aux_fid, OID himark) {
   ALWAYS_ASSERT(oidmgr->file_exists(aux_fid));
   aux_array_ = oidmgr->get_array(aux_fid_);
 
-  tuple_array->ensure_size(tuple_array->alloc_size(32*config::MB));
-  aux_array_->ensure_size(aux_array_->alloc_size(32*config::MB));
-  
-  // oidmgr->recreate_allocator(tuple_fid, himark);
-  // oidmgr->recreate_allocator(aux_fid_, himark);
+  oidmgr->ensure_file_size(tuple_fid, himark);
+  oidmgr->ensure_file_size(aux_fid_, himark);
 }
 }  // namespace ermia

@@ -194,8 +194,23 @@ void Engine::Recovery() {
           if (rec->type == ermia::dlog::log_record::INSERT_KEY) {
             // insert to index
             varstr v(data, payload_size);
-            bool success = index_fid_map[f]->RecoveryInsert(v, o);
+            UnorderedIndex *idx = index_fid_map[f];
+            bool success = idx->RecoveryInsert(v, o);
             MARK_REFERENCED(success);
+            if (ermia::config::enable_chkpt) {
+              idx->StoreKeyForCheckpoint(o, v);
+              if (idx->IsPrimary()) {
+                TableDescriptor *td = idx->GetTableDescriptor();
+                varstr *new_key =
+                    (varstr *)MM::allocate(sizeof(varstr) + v.size());
+                new (new_key) varstr((char *)new_key + sizeof(varstr), 0);
+                new_key->copy_from(&v);
+                oidmgr->ensure_file_size(td->GetKeyFid(), o + 1);
+                oidmgr->oid_put(td->GetKeyArray(), o,
+                                fat_ptr::make((void *)new_key,
+                                              INVALID_SIZE_CODE));
+              }
+            }
           } else {
             // insert to table
             auto aligned_size = align_up(payload_size + sizeof(dlog::log_record));
@@ -238,8 +253,8 @@ void Engine::Recovery() {
     }
   }
   for (auto& p : final_himarks) {
-    oidmgr->recreate_allocator(p.first, p.second);
     oidmgr->ensure_file_size(p.first, p.second + 1);
+    oidmgr->recreate_allocator(p.first, p.second + 1);
   }
   uint64_t log_recovered_csn =
       1 + *std::max_element(max_recovery_csn.begin(), max_recovery_csn.end());

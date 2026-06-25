@@ -571,7 +571,10 @@ void sm_oid_mgr::Checkpoint() {
     TableDescriptor *td = fm.second;
     chkpt_write_string(td->GetName());
     OID tuple_himark = get_allocator(td->GetTupleFid())->head.hiwater_mark;
-    OID key_himark = get_allocator(td->GetKeyFid())->head.hiwater_mark;
+    // Table keys are indexed by tuple OID. After checkpoint recovery the key
+    // array may exist before its allocator is rebuilt, so derive this from the
+    // tuple himark instead of requiring an allocator on the key FID here.
+    OID key_himark = tuple_himark;
     ChkptTableMeta meta{td->GetTupleFid(), td->GetKeyFid(), tuple_himark,
                         key_himark};
     chkpt_write(meta);
@@ -891,6 +894,7 @@ fat_ptr sm_oid_mgr::free_oid(FID f, OID o) {
 }
 
 void sm_oid_mgr::RecoveryUpsert(FID f, OID o, uint32_t payload_size, const char *value, uint64_t my_csn, fat_ptr pdest) {
+  ensure_file_size(f, o + 1);
   auto *ptr = oid_access(f, o);
   fat_ptr head = NULL_PTR;
   varstr c(value, payload_size);
