@@ -3,8 +3,14 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#include <aws/s3/S3Client.h>
+#include <aws/s3/model/GetObjectRequest.h>
+#include <aws/s3/model/ListObjectsV2Request.h>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -104,15 +110,15 @@ void chkpt_write_string(const std::string &s) {
 }
 
 template <typename T>
-bool chkpt_read(std::ifstream &in, T &value) {
+bool chkpt_read(std::istream &in, T &value) {
   return static_cast<bool>(in.read(reinterpret_cast<char *>(&value), sizeof(T)));
 }
 
-bool chkpt_read_bytes(std::ifstream &in, void *data, uint32_t size) {
+bool chkpt_read_bytes(std::istream &in, void *data, uint32_t size) {
   return !size || static_cast<bool>(in.read(reinterpret_cast<char *>(data), size));
 }
 
-bool chkpt_read_string(std::ifstream &in, std::string &out) {
+bool chkpt_read_string(std::istream &in, std::string &out) {
   uint32_t len = 0;
   if (!chkpt_read(in, len)) return false;
   out.resize(len);
@@ -130,6 +136,17 @@ UnorderedIndex *find_index_by_fid(FID index_fid) {
     }
   }
   return nullptr;
+}
+
+bool parse_checkpoint_name(const std::string &name, uint64_t &id) {
+  std::filesystem::path path(name);
+  if (path.extension() != ".chkpt") return false;
+  try {
+    id = std::stoull(path.stem().string());
+  } catch (...) {
+    return false;
+  }
+  return true;
 }
 
 std::filesystem::path find_latest_checkpoint_file() {
@@ -150,13 +167,8 @@ std::filesystem::path find_latest_checkpoint_file() {
     for (const auto &entry : fs::directory_iterator(root, ec)) {
       if (ec || !entry.is_regular_file(ec)) continue;
       const auto path = entry.path();
-      if (path.extension() != ".chkpt") continue;
       uint64_t id = 0;
-      try {
-        id = std::stoull(path.stem().string());
-      } catch (...) {
-        continue;
-      }
+      if (!parse_checkpoint_name(path.filename().string(), id)) continue;
       if (!found || id > best_id) {
         best_id = id;
         best = path;
@@ -165,6 +177,66 @@ std::filesystem::path find_latest_checkpoint_file() {
     }
   }
   return best;
+}
+
+bool find_latest_s3_checkpoint(std::string &key) {
+  if (config::s3_bucket_names.empty()) return false;
+
+  Aws::S3::S3Client client;
+  Aws::S3::Model::ListObjectsV2Request request;
+  request.SetBucket(config::s3_bucket_names[0]);
+  auto outcome = client.ListObjectsV2(request);
+  if (!outcome.IsSuccess()) {
+    LOG(WARNING) << "[Recovery] failed to list S3 checkpoints: "
+                 << outcome.GetError().GetMessage();
+    return false;
+  }
+
+  uint64_t best_id = 0;
+  bool found = false;
+  for (const auto &object : outcome.GetResult().GetContents()) {
+    uint64_t id = 0;
+    std::string candidate = object.GetKey();
+    if (!parse_checkpoint_name(candidate, id)) continue;
+    if (!found || id > best_id) {
+      best_id = id;
+      key = candidate;
+      found = true;
+    }
+  }
+  return found;
+}
+
+std::unique_ptr<std::istream> open_latest_checkpoint(std::string &name) {
+  if (!config::enable_s3) {
+    std::filesystem::path path = find_latest_checkpoint_file();
+    if (path.empty()) return nullptr;
+    name = path.string();
+    auto in = std::make_unique<std::ifstream>(path, std::ios::binary);
+    if (!*in) return nullptr;
+    return in;
+  }
+
+  std::string key;
+  if (!find_latest_s3_checkpoint(key)) return nullptr;
+
+  Aws::S3::S3Client client;
+  Aws::S3::Model::GetObjectRequest request;
+  request.SetBucket(config::s3_bucket_names[0]);
+  request.SetKey(key);
+  auto outcome = client.GetObject(request);
+  if (!outcome.IsSuccess()) {
+    LOG(WARNING) << "[Recovery] failed to read S3 checkpoint " << key << ": "
+                 << outcome.GetError().GetMessage();
+    return nullptr;
+  }
+
+  auto body = std::make_unique<std::stringstream>();
+  auto result = outcome.GetResultWithOwnership();
+  *body << result.GetBody().rdbuf();
+  body->seekg(0);
+  name = config::s3_bucket_names[0] + "/" + key;
+  return body;
 }
 }  // namespace
 
@@ -707,22 +779,20 @@ void sm_oid_mgr::Checkpoint() {
 }
 
 bool sm_oid_mgr::RecoverCheckpoint() {
-  std::filesystem::path path = find_latest_checkpoint_file();
-  if (path.empty()) {
+  std::string checkpoint_name;
+  std::unique_ptr<std::istream> checkpoint =
+      open_latest_checkpoint(checkpoint_name);
+  if (!checkpoint) {
     LOG(INFO) << "[Recovery] no checkpoint found";
     return false;
   }
 
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    LOG(WARNING) << "[Recovery] failed to open checkpoint " << path.string();
-    return false;
-  }
+  std::istream &in = *checkpoint;
 
   ChkptHeader header{};
   if (!chkpt_read(in, header) || header.magic != kCheckpointMagic ||
       header.version != kCheckpointVersion) {
-    LOG(WARNING) << "[Recovery] invalid checkpoint " << path.string();
+    LOG(WARNING) << "[Recovery] invalid checkpoint " << checkpoint_name;
     return false;
   }
 
@@ -836,7 +906,7 @@ bool sm_oid_mgr::RecoverCheckpoint() {
   }
 
   dlog::current_csn.store(std::max(dlog::current_csn.load(), header.max_csn));
-  LOG(INFO) << "[Recovery] recovered checkpoint " << path.string()
+  LOG(INFO) << "[Recovery] recovered checkpoint " << checkpoint_name
             << ", records=" << restored_records;
   return true;
 }

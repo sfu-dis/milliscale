@@ -13,6 +13,12 @@
 #include <unistd.h>
 #include <vector>
 
+#include <aws/core/utils/stream/PreallocatedStreamBuf.h>
+#include <aws/s3/S3Client.h>
+#include <aws/s3/model/ListObjectsV2Request.h>
+#include <aws/s3/model/PutObjectRequest.h>
+#include <glog/logging.h>
+
 #include "dbcore/sm-config.h"
 
 namespace ermia {
@@ -30,6 +36,9 @@ public:
 
     buffers_[0].resize(buffer_size);
     buffers_[1].resize(buffer_size);
+    if (config::enable_s3) {
+      counter_ = next_s3_checkpoint_id();
+    }
   }
 
   ~CheckpointManager() {
@@ -74,10 +83,58 @@ public:
   }
 
 private:
+  static bool parse_checkpoint_key(const std::string &key, uint64_t &id) {
+    std::filesystem::path path(key);
+    if (path.extension() != ".chkpt") {
+      return false;
+    }
+    try {
+      id = std::stoull(path.stem().string());
+    } catch (...) {
+      return false;
+    }
+    return true;
+  }
+
+  uint64_t next_s3_checkpoint_id() {
+    if (config::s3_bucket_names.empty()) {
+      LOG(FATAL) << "S3 checkpoint requested without an S3 bucket";
+    }
+
+    Aws::S3::Model::ListObjectsV2Request request;
+    request.SetBucket(config::s3_bucket_names[0]);
+    auto outcome = s3_client_.ListObjectsV2(request);
+    if (!outcome.IsSuccess()) {
+      LOG(FATAL) << "Failed to list S3 checkpoints: "
+                 << outcome.GetError().GetMessage();
+    }
+
+    uint64_t best_id = 0;
+    bool found = false;
+    for (const auto &object : outcome.GetResult().GetContents()) {
+      uint64_t id = 0;
+      if (!parse_checkpoint_key(object.GetKey(), id)) {
+        continue;
+      }
+      if (!found || id > best_id) {
+        best_id = id;
+        found = true;
+      }
+    }
+    return found ? best_id + 1 : 0;
+  }
+
   void flush_current_buffer() {
     wait_last_io();
 
     if (buffer_offset_ > 0) {
+      if (config::enable_s3) {
+        flush_current_buffer_to_s3();
+        current_buffer_idx_ = 1 - current_buffer_idx_;
+        buffer_offset_ = 0;
+        return;
+      }
+
       if (current_fd_ == -1) {
         std::filesystem::path filename =
             std::filesystem::path(config::log_dir) /
@@ -115,6 +172,41 @@ private:
     buffer_offset_ = 0;
   }
 
+  void flush_current_buffer_to_s3() {
+    if (config::s3_bucket_names.empty()) {
+      LOG(FATAL) << "S3 checkpoint requested without an S3 bucket";
+    }
+    if (current_key_.empty()) {
+      current_key_ = std::to_string(counter_) + ".chkpt";
+      file_offset_ = 0;
+    }
+
+    Aws::S3::Model::PutObjectRequest request;
+    request.SetBucket(config::s3_bucket_names[0]);
+    request.SetKey(current_key_);
+
+    auto buffer = const_cast<unsigned char *>(
+        reinterpret_cast<const unsigned char *>(
+            buffers_[current_buffer_idx_].data()));
+    auto psb = Aws::MakeShared<Aws::Utils::Stream::PreallocatedStreamBuf>(
+        "chkpt-upload", buffer, buffer_offset_);
+    auto buffer_stream =
+        Aws::MakeShared<Aws::IOStream>("chkpt-upload", psb.get());
+
+    request.SetBody(buffer_stream);
+    request.SetContentLength(buffer_offset_);
+    if (file_offset_ > 0) {
+      request.SetWriteOffsetBytes(file_offset_);
+    }
+
+    auto outcome = s3_client_.PutObject(request);
+    if (!outcome.IsSuccess()) {
+      LOG(FATAL) << "Failed to write S3 checkpoint " << current_key_ << ": "
+                 << outcome.GetError().GetMessage();
+    }
+    file_offset_ += buffer_offset_;
+  }
+
   void wait_last_io() {
     if (!has_last_io_)
       return;
@@ -126,6 +218,15 @@ private:
   }
 
   void close_current_file() {
+    if (config::enable_s3) {
+      if (!current_key_.empty()) {
+        current_key_.clear();
+        file_offset_ = 0;
+        counter_++;
+      }
+      return;
+    }
+
     if (current_fd_ != -1) {
       ::close(current_fd_);
       current_fd_ = -1;
@@ -145,10 +246,13 @@ private:
 
   int current_fd_;
   uint64_t file_offset_;
+  std::string current_key_;
 
   // Tracking async IO
   int32_t last_io_id_;
   bool has_last_io_;
+
+  Aws::S3::S3Client s3_client_;
 };
 
 }
