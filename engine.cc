@@ -59,13 +59,10 @@ Engine::~Engine() { ermia::dlog::uninitialize(); }
 
 void Engine::replayDDL() {
   // DDL log is small, so to be simple, just read the entire file
-  int fd = ermia::dlog::GetDDLFD();
-  uint32_t buff_size = 16 * 1024;
-  char* ddl_buff = new char[buff_size];
-  int read_bytes = pread(fd, ddl_buff, buff_size, 0);
-  ASSERT(read_bytes < buff_size);
+  std::string ddl_buff = ermia::dlog::read_ddl_log();
+  int read_bytes = ddl_buff.size();
   int parsed_bytes = 0;
-  char* ptr = ddl_buff;
+  char* ptr = ddl_buff.data();
   while (parsed_bytes < read_bytes) {
     auto lb = (ermia::dlog::ddl_log*) ptr;
     std::string name(lb->name, lb->size);
