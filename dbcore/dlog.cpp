@@ -30,6 +30,8 @@ thread_local char general_bucket_name[GENERAL_BUCKET_OBJ_NAME_BUFSZ];
 
 std::vector<tls_log *> tlogs;
 
+std::atomic<uint32_t> log_count(0);
+
 std::atomic<uint64_t> current_csn(1);
 
 std::vector<uint64_t> thread_begin_csns;
@@ -91,9 +93,14 @@ void commit_daemon() {
 }
 
 void initialize() {
-  uint32_t max_threads =
+  uint32_t max_logs =
       std::max(ermia::config::loaders, ermia::config::worker_threads);
-  for (uint32_t i = 0; i < max_threads; i++) {
+  ALWAYS_ASSERT(ermia::config::n_combine_log);
+  log_count.store((max_logs + ermia::config::n_combine_log - 1) /
+                      ermia::config::n_combine_log,
+                  std::memory_order_release);
+
+  for (uint32_t i = 0; i < max_logs; i++) {
     dlog::tls_log *tlog = new dlog::tls_log();
     dlog::tlogs.push_back(tlog);
     tlog->initialize(config::log_dir.c_str(), dlog::tlogs.size() - 1,

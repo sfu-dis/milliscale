@@ -48,6 +48,8 @@ extern std::atomic<uint64_t> current_csn;
 
 extern std::vector<uint64_t> thread_begin_csns;
 
+extern std::atomic<uint32_t> log_count;
+
 uint64_t get_min_thread_begin_csn();
 
 void flush_all();

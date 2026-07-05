@@ -23,17 +23,23 @@ dlog::tls_log *GetLog(uint32_t logid) {
 }
 
 dlog::tls_log *GetLog() {
-  thread_local dlog::tls_log *tlog_ptr = nullptr;
-  if (!tlog_ptr) {
-    uint32_t my_id = log_counter.fetch_add(1);
-    tlog_ptr = dlog::tlogs[my_id / ermia::config::n_combine_log];
+  thread_local uint32_t worker_id = static_cast<uint32_t>(-1);
+  thread_local bool affinity_set = false;
+  if (worker_id == static_cast<uint32_t>(-1)) {
+    worker_id = log_counter.fetch_add(1);
+  }
 
-    if (ermia::config::flusher_thread) {
-      uint32_t cpu = sched_getcpu();
-      for (uint32_t i = 0; i < ermia::config::s3_bucket_names.size(); ++i) {
-        tlog_ptr->write_thread_task[i].set_affinity(cpu);
-      }
+  uint32_t count = dlog::log_count.load(std::memory_order_acquire);
+  ALWAYS_ASSERT(count);
+  ALWAYS_ASSERT(count <= dlog::tlogs.size());
+  dlog::tls_log *tlog_ptr = dlog::tlogs[worker_id % count];
+
+  if (ermia::config::flusher_thread && !affinity_set) {
+    uint32_t cpu = sched_getcpu();
+    for (uint32_t i = 0; i < ermia::config::s3_bucket_names.size(); ++i) {
+      tlog_ptr->write_thread_task[i].set_affinity(cpu);
     }
+    affinity_set = true;
   }
   return tlog_ptr;
 }
