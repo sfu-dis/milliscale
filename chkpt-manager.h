@@ -37,6 +37,7 @@ public:
     buffers_[0].resize(buffer_size);
     buffers_[1].resize(buffer_size);
     if (config::enable_s3) {
+      s3_client_ = std::make_unique<Aws::S3::S3Client>();
       counter_ = next_s3_checkpoint_id();
     }
   }
@@ -103,7 +104,7 @@ private:
 
     Aws::S3::Model::ListObjectsV2Request request;
     request.SetBucket(config::s3_bucket_names[0]);
-    auto outcome = s3_client_.ListObjectsV2(request);
+    auto outcome = s3_client_->ListObjectsV2(request);
     if (!outcome.IsSuccess()) {
       LOG(FATAL) << "Failed to list S3 checkpoints: "
                  << outcome.GetError().GetMessage();
@@ -199,7 +200,7 @@ private:
       request.SetWriteOffsetBytes(file_offset_);
     }
 
-    auto outcome = s3_client_.PutObject(request);
+    auto outcome = s3_client_->PutObject(request);
     if (!outcome.IsSuccess()) {
       LOG(FATAL) << "Failed to write S3 checkpoint " << current_key_ << ": "
                  << outcome.GetError().GetMessage();
@@ -252,7 +253,7 @@ private:
   int32_t last_io_id_;
   bool has_last_io_;
 
-  Aws::S3::S3Client s3_client_;
+  std::unique_ptr<Aws::S3::S3Client> s3_client_;
 };
 
 }
