@@ -457,8 +457,13 @@ void bench_runner::start_measurement() {
   uint64_t dequeue_count = 0;
 
   double avg_logbuf_fill_time_ms = 0;
+  double avg_logbuf_io_time_ms = 0;
+  double avg_lock_contention_ewma = 0;
   uint64_t tot_logbuf_fill_time_us = 0;
   uint64_t tot_logbuf_fill_nb_times = 0;
+  uint64_t tot_logbuf_io_time_us = 0;
+  uint64_t tot_logbuf_io_nb_times = 0;
+  uint64_t log_count = 0;
   uint64_t flush_count = 0;
 
   if (ermia::config::pcommit) {
@@ -474,6 +479,10 @@ void bench_runner::start_measurement() {
       dequeue_count += log->tcommitter.dequeue_count;
       tot_logbuf_fill_time_us += log->fill_buf_tot_duration_us;
       tot_logbuf_fill_nb_times += log->fill_buf_nb_times;
+      tot_logbuf_io_time_us += log->io_tot_duration_us;
+      tot_logbuf_io_nb_times += log->io_nb_times;
+      avg_lock_contention_ewma += log->lock_contention_ewma;
+      ++log_count;
       flush_count += log->flush_count;
     }
 
@@ -486,7 +495,19 @@ void bench_runner::start_measurement() {
     p9999_latency_ms = latencies[latencies.size() * 0.9999] / 1000000.0;
     max_latency_ms = (double)max_latency_ns / 1000000.0;
     min_latency_ms = (double)min_latency_ns / 1000000.0;
-    avg_logbuf_fill_time_ms = (double)(tot_logbuf_fill_time_us/(tot_logbuf_fill_nb_times*1000.0));
+    if (tot_logbuf_fill_nb_times) {
+      avg_logbuf_fill_time_ms =
+          (double)(tot_logbuf_fill_time_us /
+                   (tot_logbuf_fill_nb_times * 1000.0));
+    }
+    if (tot_logbuf_io_nb_times) {
+      avg_logbuf_io_time_ms =
+          (double)(tot_logbuf_io_time_us /
+                   (tot_logbuf_io_nb_times * 1000.0));
+    }
+    if (log_count) {
+      avg_lock_contention_ewma /= static_cast<double>(log_count);
+    }
   }
 
   const double elapsed_sec = double(elapsed_us) / 1000000.0;
@@ -560,6 +581,8 @@ void bench_runner::start_measurement() {
     std::cerr << "p9999_latency: " << p9999_latency_ms << " ms" << std::endl;
     std::cerr << "max_latency: " << max_latency_ms << " ms" << std::endl;
     std::cerr << "avg_logbuf_fill_time: " << avg_logbuf_fill_time_ms << " ms" << std::endl;
+    std::cerr << "avg_logbuf_io_time: " << avg_logbuf_io_time_ms << " ms" << std::endl;
+    std::cerr << "avg_lock_contention_ewma: " << avg_lock_contention_ewma << std::endl;
   }
   std::cerr << "Dequeue count: " << dequeue_count << std::endl;
   std::cerr << "Flush count: " << flush_count << std::endl;

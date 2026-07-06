@@ -226,6 +226,15 @@ void tls_log::initialize(const char *log_dir, uint32_t log_id, uint32_t node,
   durable_lsn = 0;
   current_lsn = 0;
   flush_count = 0;
+  last_open_new_logbuf = std::chrono::steady_clock::time_point{};
+  fill_buf_tot_duration_us = 0;
+  fill_buf_nb_times = 0;
+  current_io_start = std::chrono::steady_clock::time_point{};
+  io_tot_duration_us = 0;
+  io_nb_times = 0;
+  lock_acquire_count = 0;
+  failed_lock_acquire_count = 0;
+  lock_contention_ewma = 0;
 
   // Create a new segment
   segments.reserve(
@@ -442,6 +451,7 @@ void tls_log::issue_flush(const char *buf, uint64_t size) {
   while (holes) {
   };
 
+  current_io_start = std::chrono::steady_clock::now();
   if (ermia::config::enable_s3) {
     char *key = current_segment()->name;
     uint64_t offset = current_segment()->size;
@@ -582,6 +592,26 @@ bool tls_log::poll_flush(bool peek_once) {
 
   durable_lsn += last_flush_size;
   last_segment->size.fetch_add(last_flush_size, std::memory_order_release);
+  if (current_io_start != std::chrono::steady_clock::time_point{}) {
+    auto io_end = std::chrono::steady_clock::now();
+    ++io_nb_times;
+    io_tot_duration_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                              io_end - current_io_start)
+                              .count();
+    current_io_start = std::chrono::steady_clock::time_point{};
+  }
+
+  constexpr double kLockContentionEwmaAlpha = 0.1;
+  double lock_contention_sample =
+      lock_acquire_count
+          ? static_cast<double>(failed_lock_acquire_count) /
+                static_cast<double>(lock_acquire_count)
+          : 0;
+  lock_contention_ewma =
+      kLockContentionEwmaAlpha * lock_contention_sample +
+      (1 - kLockContentionEwmaAlpha) * lock_contention_ewma;
+  lock_acquire_count = 0;
+  failed_lock_acquire_count = 0;
 
   // get last tls durable csn
   uint64_t last_tls_durable_csn =
@@ -644,13 +674,29 @@ log_block *tls_log::allocate_log_block(uint32_t payload_size,
   if (payload_size == 0) {
     txn->xc->end = txn->xc->begin - 1;
     if (ermia::config::pcommit) {
-      std::lock_guard<std::mutex> lg(lock);
+      std::unique_lock<std::mutex> lg(lock, std::defer_lock);
+      bool try_lock_failed = !lg.try_lock();
+      if (try_lock_failed) {
+        lg.lock();
+      }
+      ++lock_acquire_count;
+      if (try_lock_failed) {
+        ++failed_lock_acquire_count;
+      }
       enqueue_committed_xct(txn->xc->end, txn->max_dependent_csn, txn->is_local_log);
     }
     return nullptr;
   }
 
-  std::lock_guard<std::mutex> lg(lock);
+  std::unique_lock<std::mutex> lg(lock, std::defer_lock);
+  bool try_lock_failed = !lg.try_lock();
+  if (try_lock_failed) {
+    lg.lock();
+  }
+  ++lock_acquire_count;
+  if (try_lock_failed) {
+    ++failed_lock_acquire_count;
+  }
 
   bool is_first_txn = is_buffer_head(payload_size);
   if (tcommitter.is_empty() && is_first_txn) {

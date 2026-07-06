@@ -9,6 +9,7 @@
  * of which owns a dedicated log buffer.
  */
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 #include <fcntl.h>
@@ -187,6 +188,12 @@ struct tls_log {
 
   uint64_t fill_buf_tot_duration_us{0};
   uint64_t fill_buf_nb_times{0};
+  std::chrono::steady_clock::time_point current_io_start;
+  uint64_t io_tot_duration_us{0};
+  uint64_t io_nb_times{0};
+  uint64_t lock_acquire_count{0};
+  uint64_t failed_lock_acquire_count{0};
+  double lock_contention_ewma{0};
 
   // Get the currently open segment
   inline segment *current_segment() { return segments[segments.size() - 1]; }
@@ -269,6 +276,12 @@ struct tls_log {
     last_open_new_logbuf = std::chrono::steady_clock::time_point{};
     fill_buf_tot_duration_us = 0;
     fill_buf_nb_times = 0;
+    current_io_start = std::chrono::steady_clock::time_point{};
+    io_tot_duration_us = 0;
+    io_nb_times = 0;
+    lock_acquire_count = 0;
+    failed_lock_acquire_count = 0;
+    lock_contention_ewma = 0;
   }
 
   uint64_t get_pct(double pct) { return tcommitter.get_pct(pct); }
