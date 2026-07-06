@@ -73,6 +73,18 @@ struct Engine {
 
   inline rc_t Commit(transaction *t) {
     rc_t rc = t->commit();
+    auto *log = GetLog(ermia::thread::MyId());
+    if (log->iostate.load(std::memory_order_acquire) ==
+        dlog::tls_log::IOState::Flushing) {
+      std::unique_lock<std::mutex> lg(log->lock, std::try_to_lock);
+      if (lg.owns_lock() &&
+          log->iostate.load(std::memory_order_acquire) ==
+              dlog::tls_log::IOState::Flushing) {
+        if (log->poll_flush(true)) {
+          log->iostate = dlog::tls_log::IOState::Idle;
+        }
+      }
+    }
     return rc;
   }
 

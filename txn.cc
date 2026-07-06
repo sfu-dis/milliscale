@@ -156,16 +156,27 @@ rc_t transaction::si_commit() {
   dlog::log_block *lb = nullptr;
   dlog::tlog_lsn lb_lsn = dlog::INVALID_TLOG_LSN;
   uint64_t segnum = -1;
+  bool tried_dependency_log = false;
   
-  if (ermia::config::dependency_aware && this->is_local_log && this->prev_log_id != kInvalidLogID) {
+allocate_retry:
+  if (!tried_dependency_log && ermia::config::dependency_aware &&
+      this->is_local_log && this->prev_log_id != kInvalidLogID) {
     log = GetLog(this->prev_log_id); // dependency aware log, put transaction to the same log as it's dependency
+    tried_dependency_log = true;
   }
   if (ermia::config::optimize_dequeue == 2) {
     this->max_dependent_csn = xc->begin-1;
   }
   // When allocate log block, will create csn, enqueue csn and set first/last csn
   // need to call it no matter log_size is 0
-  lb = log->allocate_log_block(log_size, &lb_lsn, &segnum, this);
+  bool retry = false;
+  lb = log->allocate_log_block(log_size, &lb_lsn, &segnum, this, retry);
+  if (retry) {
+    log = GetLog();
+    lb_lsn = dlog::INVALID_TLOG_LSN;
+    segnum = -1;
+    goto allocate_retry;
+  }
   if (lb) {
     lb->max_dep_csn = this->max_dependent_csn;
   }

@@ -45,6 +45,8 @@ namespace dlog {
 
 constexpr uint64_t INVALID_CSN = ermia::pcommit::NDCSN_MASK;
 
+struct tls_log;
+
 extern std::atomic<uint64_t> current_csn;
 
 extern std::vector<uint64_t> thread_begin_csns;
@@ -52,6 +54,8 @@ extern std::vector<uint64_t> thread_begin_csns;
 extern std::atomic<uint32_t> log_count;
 
 uint64_t get_min_thread_begin_csn();
+
+void try_adjust_log_count(tls_log *completed_log);
 
 void flush_all();
 
@@ -124,6 +128,7 @@ struct tls_log {
     Flushing = 2
   };
   std::atomic<IOState> iostate;
+  std::atomic<bool> active;
 
   // Log buffer size in bytes
   uint64_t logbuf_size;
@@ -186,11 +191,13 @@ struct tls_log {
 
   std::chrono::steady_clock::time_point last_open_new_logbuf;
 
-  uint64_t fill_buf_tot_duration_us{0};
-  uint64_t fill_buf_nb_times{0};
+  uint64_t last_logbuf_fill_duration_us{0};
+  uint64_t logbuf_fill_total_duration_us{0};
+  uint64_t logbuf_fill_count{0};
   std::chrono::steady_clock::time_point current_io_start;
-  uint64_t io_tot_duration_us{0};
-  uint64_t io_nb_times{0};
+  uint64_t last_logbuf_io_duration_us{0};
+  uint64_t logbuf_io_total_duration_us{0};
+  uint64_t logbuf_io_count{0};
   uint64_t lock_acquire_count{0};
   uint64_t failed_lock_acquire_count{0};
   double lock_contention_ewma{0};
@@ -236,7 +243,8 @@ struct tls_log {
 
   // Allocate a log block in-place on the log buffer
   log_block *allocate_log_block(uint32_t payload_size, uint64_t *out_cur_lsn,
-                                uint64_t *out_seg_num, transaction *txn);
+                                uint64_t *out_seg_num, transaction *txn,
+                                bool &retry);
 
   // Enqueue commit queue
   void enqueue_committed_xct(uint64_t csn, uint64_t max_dependent_csn, bool is_local_log);
@@ -273,12 +281,14 @@ struct tls_log {
   void reset_latency() { tcommitter.reset_latency(); reset_logbuf_fill_latency(); }
 
   void reset_logbuf_fill_latency() {
-    last_open_new_logbuf = std::chrono::steady_clock::time_point{};
-    fill_buf_tot_duration_us = 0;
-    fill_buf_nb_times = 0;
+    last_open_new_logbuf = std::chrono::steady_clock::now();
+    last_logbuf_fill_duration_us = 0;
+    logbuf_fill_total_duration_us = 0;
+    logbuf_fill_count = 0;
     current_io_start = std::chrono::steady_clock::time_point{};
-    io_tot_duration_us = 0;
-    io_nb_times = 0;
+    last_logbuf_io_duration_us = 0;
+    logbuf_io_total_duration_us = 0;
+    logbuf_io_count = 0;
     lock_acquire_count = 0;
     failed_lock_acquire_count = 0;
     lock_contention_ewma = 0;
