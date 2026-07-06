@@ -81,6 +81,10 @@ void wakeup_commit_daemon() {
 }
 
 void try_adjust_log_count(tls_log *completed_log) {
+  if (!ermia::config::auto_detect) {
+    return;
+  }
+
   std::unique_lock<std::mutex> adjust_lg(log_count_adjust_lock,
                                          std::try_to_lock);
   if (!adjust_lg.owns_lock()) {

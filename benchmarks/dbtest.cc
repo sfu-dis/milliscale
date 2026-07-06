@@ -131,6 +131,7 @@ DEFINE_uint64(
 
 DEFINE_uint32(flusher_thread, 0, "Using flusher thread to send requests.");
 DEFINE_uint32(n_combine_log, 1, "n workers using 1 log");
+DEFINE_bool(auto_detect, false, "Whether to auto-adjust the active log count.");
 
 static std::vector<std::string> split_ws(const std::string &s) {
   std::vector<std::string> r;
@@ -277,6 +278,7 @@ void bench_main(int argc, char **argv,
 
   ermia::config::flusher_thread = FLAGS_flusher_thread;
   ermia::config::n_combine_log = FLAGS_n_combine_log;
+  ermia::config::auto_detect = FLAGS_auto_detect;
   ermia::config::log_key_for_update = FLAGS_log_key_for_update;
 
   ermia::thread::Initialize();

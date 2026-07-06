@@ -81,6 +81,7 @@ extern uint64_t benchmark_transactions;
 extern bool index_probe_only;
 extern uint32_t flusher_thread;
 extern uint32_t n_combine_log;
+extern bool auto_detect;
 extern bool recovery;
 extern uint32_t recovery_parallel_logs;
 

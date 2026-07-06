@@ -75,6 +75,7 @@ uint32_t recovery_parallel_logs = 1;
 
 uint32_t flusher_thread = 0;
 uint32_t n_combine_log = 1;
+bool auto_detect = false;
 
 // debug
 bool finish_loading = false;
