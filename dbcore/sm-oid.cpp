@@ -613,10 +613,12 @@ fat_ptr sm_oid_mgr::free_oid(FID f, OID o) {
 fat_ptr sm_oid_mgr::UpdateTuple(oid_array *oa, OID o, const varstr *value,
                                 TXN::xid_context *updater_xc, fat_ptr *new_obj_ptr) {
   auto *ptr = oa->get(o);
+
 start_over:
   fat_ptr head = volatile_read(*ptr);
   ASSERT(head.asi_type() == 0);
   Object *old_desc = (Object *)head.offset();
+
   ASSERT(old_desc);
   ASSERT(head.size_code() != INVALID_SIZE_CODE);
   dbtuple *version = (dbtuple *)old_desc->GetPayload();
@@ -809,7 +811,9 @@ install:
       // Succeeded installing a new version, now only I can modify the
       // chain, try recycle some objects
       if (config::enable_gc) {
-        MM::gc_version_chain(ptr);
+        static thread_local int gc_count = 0;
+        gc_count++;
+        if (gc_count % 64 == 0) MM::gc_version_chain(ptr);
       }
       return head;
     } else {

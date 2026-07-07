@@ -42,7 +42,7 @@ void prepare_node_memory() {
       numa_set_preferred(i);
       node_memory[i] = (char *)mmap(
           nullptr, config::node_memory_gb * config::GB, PROT_READ | PROT_WRITE,
-          MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB | MAP_POPULATE, -1, 0);
+          MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE, -1, 0);
       THROW_IF(node_memory[i] == nullptr or node_memory[i] == MAP_FAILED,
                os_error, errno, "Unable to allocate huge pages");
       ALWAYS_ASSERT(node_memory[i]);
@@ -56,7 +56,6 @@ void prepare_node_memory() {
 }
 
 void gc_version_chain(fat_ptr *oid_entry) {
-#if 0
   fat_ptr ptr = *oid_entry;
   Object *cur_obj = (Object *)ptr.offset();
   if (!cur_obj) {
@@ -68,13 +67,13 @@ void gc_version_chain(fat_ptr *oid_entry) {
   // because the head might be still being modified (hence its _next field)
   // and might be gone any time (tx abort). Skip records in chkpt file as
   // well - not even in memory.
-  auto clsn = cur_obj->GetClsn();
+  auto clsn = cur_obj->GetCSN();
   fat_ptr *prev_next = nullptr;
-  if (clsn.asi_type() == fat_ptr::ASI_CHK) {
+  if (clsn.asi_type() == fat_ptr::ASI_CHK) {  // skip if in checkpoint
     return;
   }
-  if (clsn.asi_type() != fat_ptr::ASI_LOG) {
-    DCHECK(clsn.asi_type() == fat_ptr::ASI_XID);
+  if (clsn.asi_type() != fat_ptr::ASI_CSN) {
+    DCHECK(clsn.asi_type() == fat_ptr::ASI_XID);  // if in progress look at the next one
     ptr = cur_obj->GetNextVolatile();
     cur_obj = (Object *)ptr.offset();
   }
@@ -86,8 +85,8 @@ void gc_version_chain(fat_ptr *oid_entry) {
 
   while (ptr.offset()) {
     cur_obj = (Object *)ptr.offset();
-    clsn = cur_obj->GetClsn();
-    if (clsn == NULL_PTR || clsn.asi_type() != fat_ptr::ASI_LOG) {
+    clsn = cur_obj->GetCSN();
+    if (clsn == NULL_PTR || clsn.asi_type() != fat_ptr::ASI_CSN) {
       // Might already got recycled, give up
       break;
     }
@@ -102,8 +101,8 @@ void gc_version_chain(fat_ptr *oid_entry) {
     // performance.  For good performance, we use inconsistent chkpt which
     // grabs the latest committed version directly. Log replay after the
     // chkpt-start lsn is necessary for correctness.
-    uint64_t glsn = volatile_read(gc_lsn);
-    if (LSN::from_ptr(clsn).offset() <= glsn && ptr._ptr) {
+    uint64_t glsn = dlog::get_min_thread_begin_csn();
+    if (clsn.offset() <= glsn && ptr._ptr) {
       // Fast forward to the **second** version < gc_lsn. Consider that we set
       // safesnap lsn to 1.8, and gc_lsn to 1.6. Assume we have two versions
       // with LSNs 2 and 1.5.  We need to keep the one with LSN=1.5 although
@@ -116,24 +115,25 @@ void gc_version_chain(fat_ptr *oid_entry) {
       // we're traversing at other times, e.g., after committed, then a CAS is
       // needed: __sync_bool_compare_and_swap(&prev_next->_ptr, ptr._ptr, 0)
       volatile_write(prev_next->_ptr, 0);
+
       while (ptr.offset()) {
         cur_obj = (Object *)ptr.offset();
-        clsn = cur_obj->GetClsn();
-        ALWAYS_ASSERT(clsn.asi_type() == fat_ptr::ASI_LOG);
-        ALWAYS_ASSERT(LSN::from_ptr(clsn).offset() <= glsn);
+        clsn = cur_obj->GetCSN();
+        ALWAYS_ASSERT(clsn.asi_type() == fat_ptr::ASI_CSN);
+        ALWAYS_ASSERT(clsn.offset() <= glsn);
         fat_ptr next_ptr = cur_obj->GetNextVolatile();
-        cur_obj->SetClsn(NULL_PTR);
+        cur_obj->SetCSN(NULL_PTR);
         cur_obj->SetNextVolatile(NULL_PTR);
-        if (!tls_free_object_pool) {
-          tls_free_object_pool = new TlsFreeObjectPool;
-        }
-        tls_free_object_pool->Put(ptr);
+        // if (!tls_free_object_pool) {
+        //   tls_free_object_pool = new TlsFreeObjectPool;
+        // }
+        //tls_free_object_pool->Put(ptr);
         ptr = next_ptr;
       }
       break;
     }
   }
-#endif
+
 }
 
 void *allocate(size_t size) {
