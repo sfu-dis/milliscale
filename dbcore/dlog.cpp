@@ -106,7 +106,7 @@ void try_adjust_log_count(tls_log *completed_log) {
     double new_fill_time_us =
         fill_time_us * static_cast<double>(old_count) /
         static_cast<double>(old_count - 1);
-    if (new_fill_time_us > io_time_us * 1.5) {
+    if (new_fill_time_us > io_time_us * 1.8) {
       tls_log *inactive_log = tlogs[old_count - 1];
       std::unique_lock<std::mutex> inactive_lg(inactive_log->lock,
                                                std::try_to_lock);
