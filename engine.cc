@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstring>
 #include "engine.h"
 #include "chkpt-manager.h"
 #include "index/btree_wrapper.h"
@@ -104,7 +105,6 @@ void Engine::Recovery() {
   std::vector<mfile> files;
   // map logid->[segment id, file idx in files]
   std::map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>> segment_map;
-  std::vector<uint64_t> durable_csns;
   getFiles(ermia::config::log_dir, ermia::config::s3_bucket_names[0], files);
   parse_filenames(files, segment_map);
   if (files.empty()) {
@@ -139,32 +139,104 @@ void Engine::Recovery() {
   }
 
   const uint64_t IO_SIZE = ermia::config::log_buffer_kb * 1024;
-  char* buff = new char[IO_SIZE * segment_map.size()];
+  char* buff = new char[IO_SIZE];
 
-  // read the last IO block of each log, and parse the upto csn
+  std::vector<uint64_t> last_io_block_csns;
   for (auto& kv: segment_map) {
-    uint32_t i = 0;
-    char* my_buff = buff + (IO_SIZE * i);
-    i ++;
+    auto& logid = kv.first;
     auto& segs = kv.second;
-    auto& last_seg = segs[segs.size() - 1];
-    auto file_id = last_seg.second;
-    mfile& f = files[file_id];
-    read_page_from_file(f, IO_SIZE, f.size - IO_SIZE, my_buff);
-    parse_page(my_buff, f.size - IO_SIZE, [&](ermia::dlog::log_block* lb){
-      durable_csns.push_back(lb->csn);
-    });
-  }
-  delete[] buff;
+    if (logid >= dlog::tlogs.size() || segs.empty()) {
+      continue;
+    }
 
-  std::sort(durable_csns.begin(), durable_csns.end());
-  uint64_t upto_csn = durable_csns[durable_csns.size() - 1]; // [0..upto_csn] are durable
-  for (int i = 1; i < durable_csns.size(); i++) {
-    if (durable_csns[i] - 1 > durable_csns[i - 1]) {
-      upto_csn = durable_csns[i - 1];
-      break;
+    auto& last_seg = segs[segs.size() - 1];
+    mfile& f = files[last_seg.second];
+    if (f.size <= 0) {
+      continue;
+    }
+
+    uint64_t offset =
+        ((static_cast<uint64_t>(f.size) - 1) / IO_SIZE) * IO_SIZE;
+    std::memset(buff, 0, IO_SIZE);
+    int32_t bytes = read_page_from_file(f, IO_SIZE, offset, buff);
+    if (bytes <= 0) {
+      continue;
+    }
+    parse_page(buff, offset, [](ermia::dlog::log_block*) {},
+               [&](ermia::dlog::log_record* rec, uint64_t) {
+                 last_io_block_csns.push_back(rec->csn);
+               });
+  }
+
+  uint64_t upto_csn = 0;
+  if (!last_io_block_csns.empty()) {
+    uint64_t start_csn = *std::min_element(last_io_block_csns.begin(),
+                                           last_io_block_csns.end());
+    std::vector<uint64_t> recovery_csns;
+
+    for (auto& kv: segment_map) {
+      auto& logid = kv.first;
+      auto& segs = kv.second;
+      if (logid >= dlog::tlogs.size()) {
+        continue;
+      }
+
+      bool found_start = false;
+      for (auto seg_it = segs.rbegin();
+           seg_it != segs.rend() && !found_start; ++seg_it) {
+        mfile& f = files[seg_it->second];
+        if (f.size <= 0) {
+          continue;
+        }
+
+        uint64_t page_count =
+            (static_cast<uint64_t>(f.size) + IO_SIZE - 1) / IO_SIZE;
+        for (uint64_t page = page_count; page > 0; --page) {
+          uint64_t offset = (page - 1) * IO_SIZE;
+          std::memset(buff, 0, IO_SIZE);
+          int32_t bytes = read_page_from_file(f, IO_SIZE, offset, buff);
+          if (bytes <= 0) {
+            continue;
+          }
+
+          std::vector<uint64_t> page_csns;
+          parse_page(buff, offset, [](ermia::dlog::log_block*) {},
+                     [&](ermia::dlog::log_record* rec, uint64_t) {
+                       page_csns.push_back(rec->csn);
+                     });
+          for (auto csn_it = page_csns.rbegin(); csn_it != page_csns.rend();
+               ++csn_it) {
+            recovery_csns.push_back(*csn_it);
+            if (*csn_it <= start_csn) {
+              found_start = true;
+              break;
+            }
+          }
+          if (found_start) {
+            break;
+          }
+        }
+      }
+    }
+
+    std::sort(recovery_csns.begin(), recovery_csns.end());
+    recovery_csns.erase(std::unique(recovery_csns.begin(), recovery_csns.end()),
+                        recovery_csns.end());
+
+    upto_csn = recovery_csns.empty() ? 0 : recovery_csns.back();
+    uint64_t expected_csn = start_csn;
+    for (uint64_t csn : recovery_csns) {
+      if (csn < start_csn) {
+        continue;
+      }
+      if (csn > expected_csn) {
+        upto_csn = expected_csn == 0 ? 0 : expected_csn - 1;
+        break;
+      }
+      expected_csn = csn + 1;
     }
   }
+  delete[] buff;
 
   std::vector<std::map<FID, OID>> himarks_vec(ermia::config::recovery_parallel_logs);
   std::vector<uint64_t> max_recovery_csn(ermia::config::recovery_parallel_logs, 0);
