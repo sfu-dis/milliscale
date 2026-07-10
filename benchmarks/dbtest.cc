@@ -395,15 +395,16 @@ void bench_main(int argc, char **argv,
   system(("find " + FLAGS_log_data_dir + " -size 0 -delete").c_str());
   ermia::MM::prepare_node_memory();
 
+  // Recovery may allocate while constructing Engine. Keep the main thread on a
+  // node that has an initialized TLS allocation pool.
+  numa_run_on_node(0);
+
   // Must have everything in config ready by this point
   ermia::config::sanity_check();
   ermia::Engine *db = new ermia::Engine();
 
-  // FIXME(tzwang): the current thread doesn't belong to the thread pool, and
-  // it could be on any node. But not all nodes will be used by benchmark
-  // (i.e., config::numa_nodes) and so not all nodes will have memory pool. So
-  // here run on the first NUMA node to ensure we got a place to allocate memory
-  numa_run_on_node(0);
+  // The main thread is not from the thread pool, so keep it on node 0 for
+  // allocations in the benchmark driver as well.
   test_fn(db);
   delete db;
 }

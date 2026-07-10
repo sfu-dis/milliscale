@@ -305,15 +305,28 @@ void Engine::Recovery() {
 
   std::vector<ermia::thread::Thread*> recovery_threads;
   for (size_t i = 0; i < ermia::config::recovery_parallel_logs; i++) {
-    ermia::thread::Thread *thread = ermia::thread::GetThread(true);
-    ALWAYS_ASSERT(thread);
+    ermia::thread::Thread *thread = nullptr;
+    for (uint32_t n = 0; n < ermia::config::numa_nodes; n++) {
+      uint32_t node = (i + n) % ermia::config::numa_nodes;
+      thread = ermia::thread::GetThread(node, true);
+      if (thread) {
+        break;
+      }
+    }
+    if (!thread) {
+      break;
+    }
     recovery_threads.push_back(thread);
     thread->StartTask(recovery_task, reinterpret_cast<char *>(i));
   }
 
-  for (auto* th : recovery_threads) {
-    th->Join();
-    ermia::thread::PutThread(th);
+  if (recovery_threads.empty()) {
+    recovery_task(reinterpret_cast<char *>(0));
+  } else {
+    for (auto* th : recovery_threads) {
+      th->Join();
+      ermia::thread::PutThread(th);
+    }
   }
   recovery_threads.clear();
   
