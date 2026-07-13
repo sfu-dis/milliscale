@@ -51,6 +51,9 @@ DEFINE_bool(print_cpu_util, false, "Whether to print CPU utilization.");
 DEFINE_bool(enable_perf, false,
             "Whether to run Linux perf along with benchmark.");
 DEFINE_string(perf_record_event, "n/a", "Perf record event");
+DEFINE_bool(recovery, false, "Recovery from log.");
+DEFINE_uint32(recovery_parallel_logs, 1, "Number of parallel logs to recover");
+
 #if defined(SSN) || defined(SSI)
 DEFINE_bool(safesnap, false,
             "Whether to use the safe snapshot (for SSI and SSN only).");
@@ -128,6 +131,7 @@ DEFINE_uint64(
 
 DEFINE_uint32(flusher_thread, 0, "Using flusher thread to send requests.");
 DEFINE_uint32(n_combine_log, 1, "n workers using 1 log");
+DEFINE_bool(auto_detect, false, "Whether to auto-adjust the active log count.");
 
 static std::vector<std::string> split_ws(const std::string &s) {
   std::vector<std::string> r;
@@ -189,7 +193,9 @@ void bench_main(int argc, char **argv,
   ermia::config::log_segment_mb = FLAGS_log_segment_mb;
   ermia::config::log_direct_io = FLAGS_log_direct_io;
   ermia::config::log_compress = FLAGS_log_compress;
-
+  ermia::config::recovery = FLAGS_recovery;
+  ermia::config::recovery_parallel_logs = FLAGS_recovery_parallel_logs;
+  
   if (FLAGS_log_direct_io) {
     // Log buffer must be 4KB aligned if enabled
     LOG_IF(FATAL, PAGE_SIZE & (4 * ermia::config::MB))
@@ -272,6 +278,7 @@ void bench_main(int argc, char **argv,
 
   ermia::config::flusher_thread = FLAGS_flusher_thread;
   ermia::config::n_combine_log = FLAGS_n_combine_log;
+  ermia::config::auto_detect = FLAGS_auto_detect;
   ermia::config::log_key_for_update = FLAGS_log_key_for_update;
 
   ermia::thread::Initialize();
@@ -382,18 +389,22 @@ void bench_main(int argc, char **argv,
               << std::endl;
   }
 
-  system(("rm -rf " + FLAGS_log_data_dir + "/*").c_str());
+  if (!ermia::config::recovery) {
+    system(("rm -rf " + FLAGS_log_data_dir + "/*").c_str());
+  }
+  system(("find " + FLAGS_log_data_dir + " -size 0 -delete").c_str());
   ermia::MM::prepare_node_memory();
+
+  // Recovery may allocate while constructing Engine. Keep the main thread on a
+  // node that has an initialized TLS allocation pool.
+  numa_run_on_node(0);
 
   // Must have everything in config ready by this point
   ermia::config::sanity_check();
   ermia::Engine *db = new ermia::Engine();
 
-  // FIXME(tzwang): the current thread doesn't belong to the thread pool, and
-  // it could be on any node. But not all nodes will be used by benchmark
-  // (i.e., config::numa_nodes) and so not all nodes will have memory pool. So
-  // here run on the first NUMA node to ensure we got a place to allocate memory
-  numa_run_on_node(0);
+  // The main thread is not from the thread pool, so keep it on node 0 for
+  // allocations in the benchmark driver as well.
   test_fn(db);
   delete db;
 }

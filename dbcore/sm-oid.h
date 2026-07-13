@@ -121,6 +121,7 @@ struct sm_oid_mgr {
      transaction commits and its location is properly recorded.
    */
   void Checkpoint();
+  bool RecoverCheckpoint();
 
   /* Create a new file and return its FID. If [needs_alloc]=true,
      the new file will be managed by an allocator and its FID can be
@@ -194,6 +195,8 @@ struct sm_oid_mgr {
       *entry = p;
     }
   }
+
+  void RecoveryUpsert(FID f, OID o, uint32_t payload_size, const char *value, uint64_t my_csn, fat_ptr pdest);
 
   /* Return a fat_ptr to the overwritten object (could be an in-flight version!)
    */
@@ -278,6 +281,7 @@ struct sm_oid_mgr {
   }
   inline void lock_file(FID f) { mutexen[f % MUTEX_COUNT].lock(); }
   inline void unlock_file(FID f) { mutexen[f % MUTEX_COUNT].unlock(); }
+  void ensure_file_size(FID f, size_t n);
   inline fat_ptr *oid_access(FID f, OID o) { return get_array(f)->get(o); }
   inline bool file_exists(FID f) { return files->get(f)->offset(); }
 

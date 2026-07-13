@@ -98,11 +98,15 @@ bool ConcurrentMasstreeIndex::InsertOID(transaction *t, const varstr &key, OID o
   if (inserted) {
     t->LogIndexInsert(this, oid, &key);
     if (config::enable_chkpt) {
-      auto *key_array = GetTableDescriptor()->GetKeyArray();
-      volatile_write(key_array->get(oid)->_ptr, 0);
+      StoreKeyForCheckpoint(oid, key);
     }
   }
   return inserted;
+}
+
+bool ConcurrentMasstreeIndex::RecoveryInsert(const varstr &key, OID oid) {
+  ConcurrentMasstree::insert_info_t ins_info;
+  return masstree_.insert_if_absent(key, oid, &ins_info);
 }
 
 rc_t ConcurrentMasstreeIndex::DoNodeRead(

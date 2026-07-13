@@ -9,7 +9,7 @@ struct UnorderedIndex {
   bool is_primary;
   FID self_fid;
 
-  UnorderedIndex(std::string table_name, bool is_primary);
+  UnorderedIndex(std::string table_name, bool is_primary, FID recovery_fid=-1);
   virtual ~UnorderedIndex() {}
   inline TableDescriptor *GetTableDescriptor() { return table_descriptor; }
   inline bool IsPrimary() { return is_primary; }
@@ -39,6 +39,7 @@ struct UnorderedIndex {
 
   // Map a key to an existing OID. Could be used for primary or secondary index.
   virtual bool InsertOID(transaction *t, const varstr &key, OID oid) = 0;
+  void StoreKeyForCheckpoint(OID oid, const varstr &key);
 
   virtual size_t Size() = 0;
 
@@ -46,12 +47,15 @@ struct UnorderedIndex {
 
   // Traverse the version chain to obtain the target record version
   void GetVersion(transaction *t, rc_t &rc, varstr &value, OID oid);
+
+  // Only insert to index
+  virtual bool RecoveryInsert(const varstr &key, OID oid) = 0;
 };
 
 // Base class for user-facing ordered index implementations
 struct OrderedIndex : public UnorderedIndex {
-  OrderedIndex(std::string table_name, bool is_primary)
-    : UnorderedIndex(table_name, is_primary) {}
+  OrderedIndex(std::string table_name, bool is_primary, FID recovery_fid=-1)
+    : UnorderedIndex(table_name, is_primary, recovery_fid) {}
   virtual ~OrderedIndex() {}
 
   struct ScanCallback {

@@ -1,13 +1,28 @@
 #include <thread>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include <aws/s3/S3Client.h>
+#include <aws/s3/model/GetObjectRequest.h>
+#include <aws/s3/model/ListObjectsV2Request.h>
 
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "../chkpt-manager.h"
 #include "../engine.h"
 #include "../txn.h"
 #include "../util/util.h"
 
+#include "index_table.h"
 #include "sc-hash.h"
+#include "sm-alloc.h"
 #include "sm-config.h"
 #include "sm-table.h"
 #include "sm-object.h"
@@ -15,6 +30,215 @@
 namespace ermia {
 
 sm_oid_mgr *oidmgr = NULL;
+
+namespace {
+constexpr uint64_t kCheckpointMagic = 0x4d5343484b505431ULL;  // MSCHKPT1
+constexpr uint32_t kCheckpointVersion = 2;
+
+enum class ChkptRecordKind : uint8_t {
+  kMemoryTuple = 1,
+  kColdPointer = 2,
+};
+
+struct ChkptHeader {
+  uint64_t magic;
+  uint32_t version;
+  uint32_t reserved;
+  uint64_t max_csn;
+};
+
+struct ChkptTableMeta {
+  FID tuple_fid;
+  FID key_fid;
+  OID tuple_himark;
+  OID key_himark;
+};
+
+struct ChkptIndexMeta {
+  FID table_fid;
+  FID index_fid;
+  uint8_t is_primary;
+};
+
+struct ChkptTableSection {
+  FID tuple_fid;
+  FID key_fid;
+  OID tuple_himark;
+  uint64_t nrecords;
+};
+
+struct ChkptTupleRecord {
+  OID oid;
+  uint64_t csn;
+  uint32_t key_size;
+  uint8_t kind;
+  uint8_t size_code;
+  uint16_t reserved;
+  uint32_t payload_size;
+  uint64_t raw_ptr;
+};
+
+struct ChkptIndexSection {
+  FID index_fid;
+  uint64_t nrecords;
+};
+
+struct ChkptIndexRecord {
+  OID oid;
+  uint32_t key_size;
+};
+
+struct ChkptRecordImage {
+  ChkptTupleRecord meta;
+  std::string key;
+  std::string payload;
+};
+
+template <typename T>
+void chkpt_write(const T &value) {
+  chkptmgr->write_buffer(&value, sizeof(T));
+}
+
+void chkpt_write_bytes(const void *data, uint32_t size) {
+  if (size) chkptmgr->write_buffer(data, size);
+}
+
+void chkpt_write_string(const std::string &s) {
+  uint32_t len = static_cast<uint32_t>(s.size());
+  chkpt_write(len);
+  chkpt_write_bytes(s.data(), len);
+}
+
+template <typename T>
+bool chkpt_read(std::istream &in, T &value) {
+  return static_cast<bool>(in.read(reinterpret_cast<char *>(&value), sizeof(T)));
+}
+
+bool chkpt_read_bytes(std::istream &in, void *data, uint32_t size) {
+  return !size || static_cast<bool>(in.read(reinterpret_cast<char *>(data), size));
+}
+
+bool chkpt_read_string(std::istream &in, std::string &out) {
+  uint32_t len = 0;
+  if (!chkpt_read(in, len)) return false;
+  out.resize(len);
+  return !len || static_cast<bool>(in.read(out.data(), len));
+}
+
+fat_ptr make_checkpoint_ptr(uint64_t record_id, uint8_t size_code) {
+  return fat_ptr::make(record_id + 1, size_code, fat_ptr::ASI_CHK_FLAG);
+}
+
+UnorderedIndex *find_index_by_fid(FID index_fid) {
+  for (auto &kv : TableDescriptor::index_map) {
+    if (kv.second->GetIndexFid() == index_fid) {
+      return kv.second;
+    }
+  }
+  return nullptr;
+}
+
+bool parse_checkpoint_name(const std::string &name, uint64_t &id) {
+  std::filesystem::path path(name);
+  if (path.extension() != ".chkpt") return false;
+  try {
+    id = std::stoull(path.stem().string());
+  } catch (...) {
+    return false;
+  }
+  return true;
+}
+
+std::filesystem::path find_latest_checkpoint_file() {
+  namespace fs = std::filesystem;
+  std::vector<fs::path> roots;
+  roots.emplace_back(fs::current_path());
+  if (!config::log_dir.empty()) {
+    fs::path log_dir(config::log_dir);
+    if (log_dir != roots.front()) roots.emplace_back(log_dir);
+  }
+
+  uint64_t best_id = 0;
+  fs::path best;
+  bool found = false;
+  for (const auto &root : roots) {
+    std::error_code ec;
+    if (!fs::exists(root, ec) || !fs::is_directory(root, ec)) continue;
+    for (const auto &entry : fs::directory_iterator(root, ec)) {
+      if (ec || !entry.is_regular_file(ec)) continue;
+      const auto path = entry.path();
+      uint64_t id = 0;
+      if (!parse_checkpoint_name(path.filename().string(), id)) continue;
+      if (!found || id > best_id) {
+        best_id = id;
+        best = path;
+        found = true;
+      }
+    }
+  }
+  return best;
+}
+
+bool find_latest_s3_checkpoint(std::string &key) {
+  if (config::s3_bucket_names.empty()) return false;
+
+  Aws::S3::S3Client client;
+  Aws::S3::Model::ListObjectsV2Request request;
+  request.SetBucket(config::s3_bucket_names[0]);
+  auto outcome = client.ListObjectsV2(request);
+  if (!outcome.IsSuccess()) {
+    LOG(WARNING) << "[Recovery] failed to list S3 checkpoints: "
+                 << outcome.GetError().GetMessage();
+    return false;
+  }
+
+  uint64_t best_id = 0;
+  bool found = false;
+  for (const auto &object : outcome.GetResult().GetContents()) {
+    uint64_t id = 0;
+    std::string candidate = object.GetKey();
+    if (!parse_checkpoint_name(candidate, id)) continue;
+    if (!found || id > best_id) {
+      best_id = id;
+      key = candidate;
+      found = true;
+    }
+  }
+  return found;
+}
+
+std::unique_ptr<std::istream> open_latest_checkpoint(std::string &name) {
+  if (!config::enable_s3) {
+    std::filesystem::path path = find_latest_checkpoint_file();
+    if (path.empty()) return nullptr;
+    name = path.string();
+    auto in = std::make_unique<std::ifstream>(path, std::ios::binary);
+    if (!*in) return nullptr;
+    return in;
+  }
+
+  std::string key;
+  if (!find_latest_s3_checkpoint(key)) return nullptr;
+
+  Aws::S3::S3Client client;
+  Aws::S3::Model::GetObjectRequest request;
+  request.SetBucket(config::s3_bucket_names[0]);
+  request.SetKey(key);
+  auto outcome = client.GetObject(request);
+  if (!outcome.IsSuccess()) {
+    LOG(WARNING) << "[Recovery] failed to read S3 checkpoint " << key << ": "
+                 << outcome.GetError().GetMessage();
+    return nullptr;
+  }
+
+  auto body = std::make_unique<std::stringstream>();
+  auto result = outcome.GetResultWithOwnership();
+  *body << result.GetBody().rdbuf();
+  body->seekg(0);
+  name = config::s3_bucket_names[0] + "/" + key;
+  return body;
+}
+}  // namespace
 
 struct thread_data {
   static size_t const NENTRIES = 4096;
@@ -193,6 +417,12 @@ void oid_array::ensure_size(size_t n) {
   _backing_store.ensure_size(OFFSETOF(oid_array, _entries[n]));
 }
 
+void sm_oid_mgr::ensure_file_size(FID f, size_t n) {
+  lock_file(f);
+  DEFER(unlock_file(f));
+  get_array(f)->ensure_size(n);
+}
+
 sm_oid_mgr::sm_oid_mgr() {
   /* Bootstrap the OBJARRAY, which contains everything (including
      itself). Then seed it with OID arrays for allocators and
@@ -281,7 +511,9 @@ FID sm_oid_mgr::create_file(bool needs_alloc) {
 void sm_oid_mgr::recreate_file(FID f) {
   if (file_exists(f)) {
     LOG(FATAL) << "File already exists. Is this a secondary index?";
+    return;
   }
+
   auto ptr = oid_array::make();
   oid_put(OBJARRAY_FID, f, ptr);
   ASSERT(file_exists(f));
@@ -399,163 +631,284 @@ void sm_oid_mgr::create() {
 }
 
 void sm_oid_mgr::Checkpoint() {
-#if 0
-  ASSERT(!config::is_backup_srv());
-  // Now the real work. The format of a chkpt file is:
-  // [number of indexes]
-  // [primary index 1 name length, name, tuple/key FID, himark]
-  // [primary index 2 name length, name, tuple/key FID, himark]
-  // ...
-  // [2nd index 1 name length, name, FID, himark]
-  // [2nd index 2 name length, name, FID, himark]
-  // ...
-  //
-  // [index 1 himark]
-  // [index 1 tuple_fid, key_fid]
-  // [OID1, key and/or data]
-  // [OID2, key and/or data]
-  // [index 1 himark]
-  // ...
-  // same thing for index 2
-  // ...
+  ALWAYS_ASSERT(chkptmgr);
+  uint64_t upto_csn = ermia::pcommit::global_upto_csn.load(std::memory_order_acquire);
 
-  // Write the number of indexes
-  // TODO(tzwang): handle dynamically created tables/indexes
-  uint64_t chkpt_size = 0;
-  uint32_t num_idx = TableDescriptor::NumIndexes();
-  chkptmgr->write_buffer(&num_idx, sizeof(uint32_t));
-  chkpt_size += sizeof(uint32_t);
+  ChkptHeader header{kCheckpointMagic, kCheckpointVersion, 0, upto_csn};
+  chkpt_write(header);
 
-  // Write details about each primary index, then secondary index
-  // so that during recovery we have primary indexes first and then
-  // 2nd indexes can refer to the FID of the corresponding primary.
-  bool handling_2nd = false;
-iterate_index:
+  uint32_t ntables = static_cast<uint32_t>(TableDescriptor::name_map.size());
+  chkpt_write(ntables);
   for (auto &fm : TableDescriptor::name_map) {
-    TableDescriptor *id = fm.second;
-    if (!((id->IsPrimary() && !handling_2nd) || (!id->IsPrimary() && handling_2nd))) {
-      continue;
-    }
-    size_t len = id->GetName().length();
-    FID tuple_fid = id->GetTupleFid();
-    FID key_fid = id->GetKeyFid();
-    auto *alloc = get_allocator(tuple_fid);
-    OID himark = alloc->head.hiwater_mark;
-
-    // [Name length, name, tuple/key FID, himark]
-    chkptmgr->write_buffer(&len, sizeof(size_t));
-    chkptmgr->write_buffer((void *)id->GetName().c_str(), len);
-    chkptmgr->write_buffer(&tuple_fid, sizeof(FID));
-    chkptmgr->write_buffer(&key_fid, sizeof(FID));
-    chkptmgr->write_buffer(&himark, sizeof(OID));
-    chkpt_size += (sizeof(size_t) + len + sizeof(FID) + sizeof(OID));
+    TableDescriptor *td = fm.second;
+    chkpt_write_string(td->GetName());
+    OID tuple_himark = get_allocator(td->GetTupleFid())->head.hiwater_mark;
+    // Table keys are indexed by tuple OID. After checkpoint recovery the key
+    // array may exist before its allocator is rebuilt, so derive this from the
+    // tuple himark instead of requiring an allocator on the key FID here.
+    OID key_himark = tuple_himark;
+    ChkptTableMeta meta{td->GetTupleFid(), td->GetKeyFid(), tuple_himark,
+                        key_himark};
+    chkpt_write(meta);
   }
-  if (!handling_2nd) {
-    handling_2nd = true;
-    goto iterate_index;
-  }
-  LOG(INFO) << "[Checkpoint] header size: " << chkpt_size;
 
-  // Write keys and/or tuples for each index, primary first
+  uint32_t nindexes = static_cast<uint32_t>(TableDescriptor::index_map.size());
+  chkpt_write(nindexes);
+  for (auto &im : TableDescriptor::index_map) {
+    UnorderedIndex *idx = im.second;
+    chkpt_write_string(im.first);
+    ChkptIndexMeta meta{idx->GetTableDescriptor()->GetTupleFid(),
+                        idx->GetIndexFid(),
+                        static_cast<uint8_t>(idx->IsPrimary() ? 1 : 0)};
+    chkpt_write(meta);
+  }
+
+  uint64_t total_records = 0;
   for (auto &fm : TableDescriptor::name_map) {
-    TableDescriptor *id = fm.second;
-    FID tuple_fid = id->GetTupleFid();
-    // Find the high watermark of this file and dump its
-    // backing store up to the size of the high watermark
-    auto *alloc = get_allocator(tuple_fid);
-    OID himark = alloc->head.hiwater_mark;
+    TableDescriptor *td = fm.second;
+    oid_array *tuple_array = td->GetTupleArray();
+    OID tuple_himark = get_allocator(td->GetTupleFid())->head.hiwater_mark;
 
-    // Write himark
-    chkptmgr->write_buffer(&himark, sizeof(OID));
+    ensure_file_size(td->GetKeyFid(), tuple_himark + 1);
+    oid_array *key_array = td->GetKeyArray();
 
-    // Write the tuple FID to note which table these OIDs to follow belongs to
-    chkptmgr->write_buffer(&tuple_fid, sizeof(FID));
+    std::vector<ChkptRecordImage> records;
+    for (OID oid = 0; oid < tuple_himark; oid++) {
+      fat_ptr ptr = oid_get(tuple_array, oid);
+      if (ptr == NULL_PTR) continue;
+      fat_ptr key_ptr = oid_get(key_array, oid);
+      if (key_ptr == NULL_PTR) continue;
 
-    // Key FID
-    FID key_fid = id->GetKeyFid();
-    chkptmgr->write_buffer(&key_fid, sizeof(FID));
+      if (ptr.asi_type() == fat_ptr::ASI_LOG) continue;
 
-    auto *oa = fm.second->GetTupleArray();
-    auto *ka = fm.second->GetKeyArray();
-    ASSERT(oa);
-    ASSERT(ka);
-
-    // Now write the [OID, payload] pairs. Record both OID and keys for
-    // primary indexes; keys only for 2nd indexes.
-    uint64_t nrecords = 0;
-    bool is_primary = id->IsPrimary();
-    for (OID oid = 0; oid < himark; oid++) {
-      // Checkpoints need not be consistent: grab the latest committed
-      // version and leave.
-      fat_ptr ptr = oid_get(oa, oid);
-    retry:
-      if (not ptr.offset()) {
-        continue;
-      }
-
-      Object *obj = (Object *)ptr.offset();
-      fat_ptr next = obj->GetNextVolatile();
-      fat_ptr clsn = obj->GetClsn();
-      if (clsn == NULL_PTR) {
-        // Stepping on a dead tuple, see details in oid_get_version.
-        ptr = oid_get(oa, oid);
-        goto retry;
-      } else if (clsn.asi_type() != fat_ptr::ASI_LOG) {
-        // Someone is still working on this version
-        ptr = next;
-        goto retry;
-      }
-
-      ASSERT(obj->GetClsn().offset());
-      ASSERT(obj->GetClsn().asi_type() == fat_ptr::ASI_LOG);
-
-      fat_ptr pdest = obj->GetPersistentAddress();
-      if (pdest.offset() == 0) {
-        // must be a delete, skip it
-        continue;
-      }
-
-      nrecords++;
-      // Write OID
-      chkptmgr->write_buffer(&oid, sizeof(OID));
-
-      // Key
-      fat_ptr key_ptr = oid_get(ka, oid);
-      varstr *key = (varstr *)key_ptr.offset();
-      ALWAYS_ASSERT(key);
-      ALWAYS_ASSERT(key->l);
-      ALWAYS_ASSERT(key->p);
-      chkptmgr->write_buffer(&key->l, sizeof(uint32_t));
-      chkptmgr->write_buffer(key->data(), key->size());
-
-      // Tuple data if it's the primary index
-      if (fm.second->IsPrimary()) {
-        if (!obj->IsInMemory()) {
-          obj->Pin();
+      Object *obj = nullptr;
+      fat_ptr csn = NULL_PTR;
+      while (ptr != NULL_PTR) {
+        obj = reinterpret_cast<Object *>(ptr.offset());
+        csn = obj->GetCSN();
+        if (csn == NULL_PTR) {
+          ptr = oid_get(tuple_array, oid);
+          continue;
         }
-        uint8_t size_code = ptr.size_code();
-        ALWAYS_ASSERT(size_code != INVALID_SIZE_CODE);
-        auto data_size = decode_size_aligned(size_code);
-        data_size = decode_size_aligned(size_code);
-        ALWAYS_ASSERT(obj->GetPinnedTuple()->size <=
-                      data_size - sizeof(Object) - sizeof(dbtuple));
-        chkptmgr->write_buffer(&size_code, sizeof(uint8_t));
-        // It's already there if we're digging out a tuple from a previous chkpt
-        chkptmgr->write_buffer((char *)obj, data_size);
-        ALWAYS_ASSERT(obj->GetClsn().asi_type() == fat_ptr::ASI_LOG);
-        ALWAYS_ASSERT(obj->GetPinnedTuple()->size <=
-                      data_size - sizeof(Object) - sizeof(dbtuple));
-        chkpt_size += (sizeof(OID) + sizeof(uint8_t) + data_size);
+        if (csn.asi_type() == fat_ptr::ASI_XID || csn.offset() >= upto_csn) {
+          ptr = obj->GetNextVolatile();
+          continue;
+        }
+        break;
       }
+      if (ptr == NULL_PTR) continue;
+      ALWAYS_ASSERT(csn.asi_type() == fat_ptr::ASI_CSN);
+      if (obj->GetPersistentAddress() == NULL_PTR) continue;
+      if (!obj->IsInMemory()) continue;
+      varstr *key = reinterpret_cast<varstr *>(oid_get(key_array, oid).offset());
+      ALWAYS_ASSERT(key && key->p);
+
+      dbtuple *tuple = reinterpret_cast<dbtuple *>(obj->GetPayload());
+      ChkptTupleRecord rec{};
+      rec.oid = oid;
+      rec.kind = static_cast<uint8_t>(ChkptRecordKind::kMemoryTuple);
+      rec.csn = CSN::from_ptr(obj->GetCSN()).offset();
+      rec.size_code = ptr.size_code();
+      rec.key_size = key->size();
+      rec.payload_size = tuple->size;
+      records.push_back(
+          {rec,
+           std::string(reinterpret_cast<const char *>(key->data()),
+                       rec.key_size),
+           std::string(reinterpret_cast<const char *>(tuple->get_value_start()),
+                       rec.payload_size)});
     }
-    // Write himark to denote end
-    chkptmgr->write_buffer(&himark, sizeof(OID));
-    LOG(INFO) << "[Checkpoint] " << id->GetName() << " (" << tuple_fid << ", "
-              << key_fid << ") himark=" << himark << ", wrote " << chkpt_size
-              << " bytes, " << nrecords << " records";
+
+    ChkptTableSection section{td->GetTupleFid(), td->GetKeyFid(), tuple_himark,
+                              static_cast<uint64_t>(records.size())};
+    chkpt_write(section);
+
+    for (const auto &record : records) {
+      chkpt_write(record.meta);
+      chkpt_write_bytes(record.key.data(), record.meta.key_size);
+      chkpt_write_bytes(record.payload.data(), record.meta.payload_size);
+    }
+
+    total_records += records.size();
+    LOG(INFO) << "[Checkpoint] table " << td->GetName() << " ("
+              << td->GetTupleFid() << ", " << td->GetKeyFid()
+              << ") himark=" << tuple_himark << ", records="
+              << records.size();
   }
+
+  for (auto &im : TableDescriptor::index_map) {
+    UnorderedIndex *idx = im.second;
+    TableDescriptor *td = idx->GetTableDescriptor();
+    OID tuple_himark = get_allocator(td->GetTupleFid())->head.hiwater_mark;
+    ensure_file_size(idx->GetIndexFid(), tuple_himark + 1);
+    oid_array *index_key_array = get_array(idx->GetIndexFid());
+
+    std::vector<ChkptRecordImage> records;
+    for (OID oid = 0; oid < tuple_himark; oid++) {
+      fat_ptr key_ptr = oid_get(index_key_array, oid);
+      if (key_ptr == NULL_PTR) continue;
+
+      varstr *key = reinterpret_cast<varstr *>(key_ptr.offset());
+      ALWAYS_ASSERT(key && key->p);
+
+      ChkptTupleRecord rec{};
+      rec.oid = oid;
+      rec.key_size = key->size();
+      records.push_back(
+          {rec,
+           std::string(reinterpret_cast<const char *>(key->data()),
+                       rec.key_size),
+           std::string()});
+    }
+
+    ChkptIndexSection section{idx->GetIndexFid(),
+                              static_cast<uint64_t>(records.size())};
+    chkpt_write(section);
+    for (const auto &record : records) {
+      ChkptIndexRecord rec{record.meta.oid, record.meta.key_size};
+      chkpt_write(rec);
+      chkpt_write_bytes(record.key.data(), rec.key_size);
+    }
+    LOG(INFO) << "[Checkpoint] index " << im.first << " ("
+              << idx->GetIndexFid() << ") records=" << records.size();
+  }
+
   chkptmgr->sync_buffer();
-#endif
+  LOG(INFO) << "[Checkpoint] wrote " << ntables << " tables, " << nindexes
+            << " indexes, " << total_records << " records";
+}
+
+bool sm_oid_mgr::RecoverCheckpoint() {
+  std::string checkpoint_name;
+  std::unique_ptr<std::istream> checkpoint =
+      open_latest_checkpoint(checkpoint_name);
+  if (!checkpoint) {
+    LOG(INFO) << "[Recovery] no checkpoint found";
+    return false;
+  }
+
+  std::istream &in = *checkpoint;
+
+  ChkptHeader header{};
+  if (!chkpt_read(in, header) || header.magic != kCheckpointMagic ||
+      header.version != kCheckpointVersion) {
+    LOG(WARNING) << "[Recovery] invalid checkpoint " << checkpoint_name;
+    return false;
+  }
+
+  uint32_t ntables = 0;
+  if (!chkpt_read(in, ntables)) return false;
+  for (uint32_t i = 0; i < ntables; i++) {
+    std::string name;
+    ChkptTableMeta meta{};
+    if (!chkpt_read_string(in, name) || !chkpt_read(in, meta)) return false;
+
+    TableDescriptor *td = TableDescriptor::NameExists(name)
+                              ? TableDescriptor::Get(name)
+                              : TableDescriptor::New(name);
+    OID himark = std::max(meta.tuple_himark, meta.key_himark);
+    td->Recover(meta.tuple_fid, meta.key_fid, himark);
+  }
+
+  uint32_t nindexes = 0;
+  if (!chkpt_read(in, nindexes)) return false;
+  for (uint32_t i = 0; i < nindexes; i++) {
+    std::string name;
+    ChkptIndexMeta meta{};
+    if (!chkpt_read_string(in, name) || !chkpt_read(in, meta)) return false;
+    if (!TableDescriptor::index_map.count(name)) {
+      LOG(WARNING) << "[Recovery] checkpoint index metadata for " << name
+                   << " has no recreated index; replay DDL before checkpoint";
+    }
+    if (!file_exists(meta.index_fid)) {
+      recreate_file(meta.index_fid);
+    }
+  }
+
+  uint64_t restored_records = 0;
+  for (uint32_t i = 0; i < ntables; i++) {
+    ChkptTableSection section{};
+    if (!chkpt_read(in, section)) return false;
+
+    TableDescriptor *td = TableDescriptor::Get(section.tuple_fid);
+    ALWAYS_ASSERT(td);
+    oid_array *tuple_array = td->GetTupleArray();
+    oid_array *key_array = td->GetKeyArray();
+    // tuple_array->ensure_size(section.tuple_himark + 1);
+    // key_array->ensure_size(section.tuple_himark + 1);
+
+    ensure_file_size(section.tuple_fid, section.tuple_himark + 1);
+    ensure_file_size(section.key_fid, section.tuple_himark + 1);
+    for (uint64_t r = 0; r < section.nrecords; r++) {
+      ChkptTupleRecord rec{};
+      if (!chkpt_read(in, rec)) return false;
+
+      std::string key_buf(rec.key_size, '\0');
+      if (!chkpt_read_bytes(in, key_buf.data(), rec.key_size)) return false;
+
+      varstr key(key_buf.data(), rec.key_size);
+      varstr *stored_key =
+          reinterpret_cast<varstr *>(MM::allocate(sizeof(varstr) + rec.key_size));
+      new (stored_key) varstr(reinterpret_cast<char *>(stored_key) + sizeof(varstr), 0);
+      stored_key->copy_from(&key);
+      oid_put(key_array, rec.oid, fat_ptr::make(stored_key, INVALID_SIZE_CODE));
+
+      if (rec.kind == static_cast<uint8_t>(ChkptRecordKind::kColdPointer)) {
+        continue;
+      }
+
+      std::string payload(rec.payload_size, '\0');
+      if (!chkpt_read_bytes(in, payload.data(), rec.payload_size)) return false;
+
+      varstr value(payload.data(), rec.payload_size);
+      fat_ptr obj_ptr = Object::Create(&value);
+      Object *obj = reinterpret_cast<Object *>(obj_ptr.offset());
+      obj->SetCSN(CSN::make(rec.csn).to_ptr());
+      obj->SetPersistentAddress(make_checkpoint_ptr(restored_records, obj_ptr.size_code()));
+      oid_put(tuple_array, rec.oid, obj_ptr);
+      restored_records++;
+    }
+
+    recreate_allocator(section.tuple_fid, section.tuple_himark + 1);
+    recreate_allocator(section.key_fid, section.tuple_himark + 1);
+  }
+
+  for (uint32_t i = 0; i < nindexes; i++) {
+    ChkptIndexSection section{};
+    if (!chkpt_read(in, section)) return false;
+
+    UnorderedIndex *idx = find_index_by_fid(section.index_fid);
+    ALWAYS_ASSERT(idx);
+    OID max_oid = 0;
+    ensure_file_size(section.index_fid, 1);
+    oid_array *index_key_array = get_array(section.index_fid);
+
+    for (uint64_t r = 0; r < section.nrecords; r++) {
+      ChkptIndexRecord rec{};
+      if (!chkpt_read(in, rec)) return false;
+
+      std::string key_buf(rec.key_size, '\0');
+      if (!chkpt_read_bytes(in, key_buf.data(), rec.key_size)) return false;
+
+      varstr key(key_buf.data(), rec.key_size);
+      varstr *stored_key =
+          reinterpret_cast<varstr *>(MM::allocate(sizeof(varstr) + rec.key_size));
+      new (stored_key) varstr(reinterpret_cast<char *>(stored_key) + sizeof(varstr), 0);
+      stored_key->copy_from(&key);
+
+      ensure_file_size(section.index_fid, rec.oid + 1);
+      oid_put(index_key_array, rec.oid,
+              fat_ptr::make(stored_key, INVALID_SIZE_CODE));
+      idx->RecoveryInsert(key, rec.oid);
+      max_oid = std::max(max_oid, rec.oid);
+    }
+    recreate_allocator(section.index_fid, max_oid + 1);
+  }
+
+  dlog::current_csn.store(std::max(dlog::current_csn.load(), header.max_csn));
+  LOG(INFO) << "[Recovery] recovered checkpoint " << checkpoint_name
+            << ", records=" << restored_records;
+  return true;
 }
 
 void sm_oid_mgr::start_warm_up() {
@@ -608,6 +961,52 @@ fat_ptr sm_oid_mgr::free_oid(FID f, OID o) {
   *ptr = NULL_PTR;
   thread_free(self, f, o);
   return rval;
+}
+
+void sm_oid_mgr::RecoveryUpsert(FID f, OID o, uint32_t payload_size, const char *value, uint64_t my_csn, fat_ptr pdest) {
+  ensure_file_size(f, o + 1);
+  auto *ptr = oid_access(f, o);
+  fat_ptr head = NULL_PTR;
+  varstr c(value, payload_size);
+  fat_ptr new_obj_ptr = Object::Create(&c);
+  Object *new_object = (Object *) new_obj_ptr.offset();
+  if (*ptr == NULL_PTR) {
+    goto install;
+  }
+start_over:
+  {
+    head = volatile_read(*ptr);
+
+    ASSERT(head.asi_type() == 0);
+    Object* old_desc = (Object *)head.offset();
+    ASSERT(old_desc);
+    ASSERT(head.size_code() != INVALID_SIZE_CODE);
+    dbtuple *version = (dbtuple *)old_desc->GetPayload();
+    auto csn = old_desc->GetCSN();
+
+    if (csn == NULL_PTR) {
+      // stepping on an unlinked version?
+      MM::deallocate(new_obj_ptr);
+      goto start_over;
+    }
+    // Only install when my csn is larger
+    if (CSN::from_ptr(csn).offset() > my_csn) {
+      return;
+    }
+
+    new_object->SetNextPersistent(old_desc->GetPersistentAddress());
+    new_object->SetNextVolatile(old_desc->GetNextVolatile());
+  }
+install:
+  fat_ptr csn_ptr = CSN::make(my_csn).to_ptr();
+  new_object->SetPersistentAddress(pdest);
+  new_object->SetCSN(csn_ptr);
+  if (__sync_bool_compare_and_swap(&ptr->_ptr, head._ptr, new_obj_ptr._ptr)) {
+    // Recycle old head
+    // MM::deallocate(*head);
+  } else {
+    goto start_over;
+  }
 }
 
 fat_ptr sm_oid_mgr::UpdateTuple(oid_array *oa, OID o, const varstr *value,

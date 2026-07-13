@@ -9,6 +9,7 @@
  * of which owns a dedicated log buffer.
  */
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 #include <fcntl.h>
@@ -44,11 +45,17 @@ namespace dlog {
 
 constexpr uint64_t INVALID_CSN = ermia::pcommit::NDCSN_MASK;
 
+struct tls_log;
+
 extern std::atomic<uint64_t> current_csn;
 
 extern std::vector<uint64_t> thread_begin_csns;
 
+extern std::atomic<uint32_t> log_count;
+
 uint64_t get_min_thread_begin_csn();
+
+void try_adjust_log_count(tls_log *completed_log);
 
 void flush_all();
 
@@ -100,7 +107,7 @@ struct segment {
 
   const static uint64_t DIRTY_BIT = 1ULL << 63;
   // ctor and dtor
-  segment(int dfd, const char *segname, bool dio);
+  segment(int dfd, const char *segname, bool dio, bool trunc=true);
   ~segment();
 };
 
@@ -121,6 +128,7 @@ struct tls_log {
     Flushing = 2
   };
   std::atomic<IOState> iostate;
+  std::atomic<bool> active;
 
   // Log buffer size in bytes
   uint64_t logbuf_size;
@@ -183,8 +191,16 @@ struct tls_log {
 
   std::chrono::steady_clock::time_point last_open_new_logbuf;
 
-  uint64_t fill_buf_tot_duration_us{0};
-  uint64_t fill_buf_nb_times{0};
+  uint64_t last_logbuf_fill_duration_us{0};
+  uint64_t logbuf_fill_total_duration_us{0};
+  uint64_t logbuf_fill_count{0};
+  std::chrono::steady_clock::time_point current_io_start;
+  uint64_t last_logbuf_io_duration_us{0};
+  uint64_t logbuf_io_total_duration_us{0};
+  uint64_t logbuf_io_count{0};
+  uint64_t lock_acquire_count{0};
+  uint64_t failed_lock_acquire_count{0};
+  double lock_contention_ewma{0};
 
   // Get the currently open segment
   inline segment *current_segment() { return segments[segments.size() - 1]; }
@@ -227,7 +243,8 @@ struct tls_log {
 
   // Allocate a log block in-place on the log buffer
   log_block *allocate_log_block(uint32_t payload_size, uint64_t *out_cur_lsn,
-                                uint64_t *out_seg_num, transaction *txn);
+                                uint64_t *out_seg_num, transaction *txn,
+                                bool &retry);
 
   // Enqueue commit queue
   void enqueue_committed_xct(uint64_t csn, uint64_t max_dependent_csn, bool is_local_log);
@@ -245,8 +262,9 @@ struct tls_log {
   inline void switch_log_buffers() {
     uint32_t logbuf_idx = (active_logbuf == logbuf[0]) ? 1 : 0;
     active_logbuf = logbuf[logbuf_idx];
+    ((io_block*) active_logbuf)->num = 0;
     first_csns[logbuf_idx] = INVALID_CSN; // first csn set to invalid
-    logbuf_offset = 0;
+    logbuf_offset = sizeof(io_block);
   }
 
   void issue_read(int fd, char *buf, uint64_t size, uint64_t offset,
@@ -263,9 +281,17 @@ struct tls_log {
   void reset_latency() { tcommitter.reset_latency(); reset_logbuf_fill_latency(); }
 
   void reset_logbuf_fill_latency() {
-    last_open_new_logbuf = std::chrono::steady_clock::time_point{};
-    fill_buf_tot_duration_us = 0;
-    fill_buf_nb_times = 0;
+    last_open_new_logbuf = std::chrono::steady_clock::now();
+    last_logbuf_fill_duration_us = 0;
+    logbuf_fill_total_duration_us = 0;
+    logbuf_fill_count = 0;
+    current_io_start = std::chrono::steady_clock::time_point{};
+    last_logbuf_io_duration_us = 0;
+    logbuf_io_total_duration_us = 0;
+    logbuf_io_count = 0;
+    lock_acquire_count = 0;
+    failed_lock_acquire_count = 0;
+    lock_contention_ewma = 0;
   }
 
   uint64_t get_pct(double pct) { return tcommitter.get_pct(pct); }
@@ -290,7 +316,11 @@ struct tls_log {
       return false;
     }
     uint32_t alloc_size = payload_size + sizeof(log_block);
-    return (!logbuf_offset) || (alloc_size + logbuf_offset > logbuf_size);
+    return nothing_in_logbuf() || (alloc_size + logbuf_offset > logbuf_size);
+  }
+
+  const bool nothing_in_logbuf() const {
+    return logbuf_offset == sizeof(io_block);
   }
 
   void set_first_csn(uint64_t block_csn) {

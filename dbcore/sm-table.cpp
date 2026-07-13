@@ -40,17 +40,19 @@ void TableDescriptor::AddSecondaryIndex(UnorderedIndex *index, const std::string
 }
 
 void TableDescriptor::Recover(FID tuple_fid, FID aux_fid, OID himark) {
-  ALWAYS_ASSERT(tuple_fid == 0);
-  tuple_fid = tuple_fid;
+  this->tuple_fid = tuple_fid;
   aux_fid_ = aux_fid;
 
   // Both primary and secondary indexes point to the same descriptor
   if (!FidExists(tuple_fid)) {
-    // Primary index
     oidmgr->recreate_file(tuple_fid);
     fid_map[tuple_fid] = this;
+  } else if (!oidmgr->file_exists(tuple_fid)) {
+    oidmgr->recreate_file(tuple_fid);
   }
-  oidmgr->recreate_file(aux_fid_);
+  if (!oidmgr->file_exists(aux_fid_)) {
+    oidmgr->recreate_file(aux_fid_);
+  }
   fid_map[aux_fid_] = this;
 
   ALWAYS_ASSERT(oidmgr->file_exists(tuple_fid));
@@ -58,10 +60,7 @@ void TableDescriptor::Recover(FID tuple_fid, FID aux_fid, OID himark) {
   ALWAYS_ASSERT(oidmgr->file_exists(aux_fid));
   aux_array_ = oidmgr->get_array(aux_fid_);
 
-  if (himark > 0) {
-    tuple_array->ensure_size(tuple_array->alloc_size(himark));
-    aux_array_->ensure_size(aux_array_->alloc_size(himark));
-    oidmgr->recreate_allocator(tuple_fid, himark);
-  }
+  oidmgr->ensure_file_size(tuple_fid, himark);
+  oidmgr->ensure_file_size(aux_fid_, himark);
 }
 }  // namespace ermia

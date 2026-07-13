@@ -157,9 +157,10 @@ void bench_runner::run() {
 
   // load data, unless we recover from logs or is a backup server (recover from
   // shipped logs)
-  ermia::volatile_write(ermia::config::state, ermia::config::kStateLoading);
-  std::vector<bench_loader *> loaders = make_loaders();
-  {
+  if (!ermia::config::recovery){
+    ermia::volatile_write(ermia::config::state, ermia::config::kStateLoading);
+    std::vector<bench_loader *> loaders = make_loaders();
+
     util::scoped_timer t("dataloading");
     uint32_t done = 0;
     uint32_t n_running = 0;
@@ -204,13 +205,18 @@ void bench_runner::run() {
   // if (ermia::config::enable_chkpt) {
   //  ermia::chkptmgr->do_chkpt();  // this is synchronous
   // }
-
-  /*
+  std::thread* chkpt_thread;
   // Start checkpointer after database is ready
   if (ermia::config::enable_chkpt) {
-    ermia::chkptmgr->start_chkpt_thread();
+    chkpt_thread = new std::thread([&]() {
+      while (ermia::config::state != ermia::config::kStateShutdown) {
+        sleep(3);
+      std::cout << "checkpointing\n";
+        ermia::oidmgr->Checkpoint();
+      }
+    });
   }
-  */
+  
   ermia::volatile_write(ermia::config::state, ermia::config::kStateForwardProcessing);
   for(auto& log: ermia::dlog::tlogs){
     log->reset_latency();
@@ -219,6 +225,9 @@ void bench_runner::run() {
 
   if (ermia::config::worker_threads) {
     start_measurement();
+  }
+  if (ermia::config::enable_chkpt) {
+    chkpt_thread->join();
   }
 }
 
@@ -448,8 +457,13 @@ void bench_runner::start_measurement() {
   uint64_t dequeue_count = 0;
 
   double avg_logbuf_fill_time_ms = 0;
-  uint64_t tot_logbuf_fill_time_us = 0;
-  uint64_t tot_logbuf_fill_nb_times = 0;
+  double avg_logbuf_io_time_ms = 0;
+  double avg_lock_contention_ewma = 0;
+  uint64_t logbuf_fill_total_duration_us = 0;
+  uint64_t logbuf_fill_count = 0;
+  uint64_t logbuf_io_total_duration_us = 0;
+  uint64_t logbuf_io_count = 0;
+  uint64_t log_count = 0;
   uint64_t flush_count = 0;
 
   if (ermia::config::pcommit) {
@@ -463,8 +477,12 @@ void bench_runner::start_measurement() {
     }
     for (auto &log : ermia::dlog::tlogs) {
       dequeue_count += log->tcommitter.dequeue_count;
-      tot_logbuf_fill_time_us += log->fill_buf_tot_duration_us;
-      tot_logbuf_fill_nb_times += log->fill_buf_nb_times;
+      logbuf_fill_total_duration_us += log->logbuf_fill_total_duration_us;
+      logbuf_fill_count += log->logbuf_fill_count;
+      logbuf_io_total_duration_us += log->logbuf_io_total_duration_us;
+      logbuf_io_count += log->logbuf_io_count;
+      avg_lock_contention_ewma += log->lock_contention_ewma;
+      ++log_count;
       flush_count += log->flush_count;
     }
 
@@ -477,7 +495,19 @@ void bench_runner::start_measurement() {
     p9999_latency_ms = latencies[latencies.size() * 0.9999] / 1000000.0;
     max_latency_ms = (double)max_latency_ns / 1000000.0;
     min_latency_ms = (double)min_latency_ns / 1000000.0;
-    avg_logbuf_fill_time_ms = (double)(tot_logbuf_fill_time_us/(tot_logbuf_fill_nb_times*1000.0));
+    if (logbuf_fill_count) {
+      avg_logbuf_fill_time_ms =
+          static_cast<double>(logbuf_fill_total_duration_us) /
+          (static_cast<double>(logbuf_fill_count) * 1000.0);
+    }
+    if (logbuf_io_count) {
+      avg_logbuf_io_time_ms =
+          static_cast<double>(logbuf_io_total_duration_us) /
+          (static_cast<double>(logbuf_io_count) * 1000.0);
+    }
+    if (log_count) {
+      avg_lock_contention_ewma /= static_cast<double>(log_count);
+    }
   }
 
   const double elapsed_sec = double(elapsed_us) / 1000000.0;
@@ -517,9 +547,9 @@ void bench_runner::start_measurement() {
     }
   }
 
-  //if (ermia::config::enable_chkpt) {
-  //  delete ermia::chkptmgr;
-  //}
+  // if (ermia::config::enable_chkpt) {
+   // delete ermia::chkptmgr;
+  // }
 
   std::cerr << "--- table statistics ---" << std::endl;
   for (std::map<std::string, ermia::UnorderedIndex *>::iterator it = open_tables.begin();
@@ -551,6 +581,8 @@ void bench_runner::start_measurement() {
     std::cerr << "p9999_latency: " << p9999_latency_ms << " ms" << std::endl;
     std::cerr << "max_latency: " << max_latency_ms << " ms" << std::endl;
     std::cerr << "avg_logbuf_fill_time: " << avg_logbuf_fill_time_ms << " ms" << std::endl;
+    std::cerr << "avg_logbuf_io_time: " << avg_logbuf_io_time_ms << " ms" << std::endl;
+    std::cerr << "avg_lock_contention_ewma: " << avg_lock_contention_ewma << std::endl;
   }
   std::cerr << "Dequeue count: " << dequeue_count << std::endl;
   std::cerr << "Flush count: " << flush_count << std::endl;

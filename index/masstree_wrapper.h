@@ -57,13 +57,15 @@ struct ConcurrentMasstreeIndex : public OrderedIndex {
                          const ConcurrentMasstree::node_opaque_t *node,
                          uint64_t version);
 
-  ConcurrentMasstreeIndex(const char *table_name, bool primary)
-    : OrderedIndex(table_name, primary) {}
+  ConcurrentMasstreeIndex(const char *table_name, bool primary, FID recovery_fid=-1)
+    : OrderedIndex(table_name, primary, recovery_fid) {}
   ~ConcurrentMasstreeIndex() {}
 
   ConcurrentMasstree &GetMasstree() { return masstree_; }
 
   bool InsertOID(transaction *t, const varstr &key, OID oid) override;
+  
+  bool RecoveryInsert(const varstr &key, OID oid) override;
 
   rc_t Scan(transaction *t, const varstr &start_key, const varstr *end_key,
                      ScanCallback &callback) override;

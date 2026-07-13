@@ -15,11 +15,16 @@ bool BTreeOLCIndex<KeyLength>::InsertOID(transaction *t, const varstr &key, OID 
   if (inserted) {
     t->LogIndexInsert(this, oid, &key);
     if (config::enable_chkpt) {
-      auto *key_array = GetTableDescriptor()->GetKeyArray();
-      volatile_write(key_array->get(oid)->_ptr, 0);
+      StoreKeyForCheckpoint(oid, key);
     }
   }
   return inserted;
+}
+
+template<uint32_t KeyLength>
+bool BTreeOLCIndex<KeyLength>::RecoveryInsert(const varstr &key, OID oid) {
+  FixedLengthKey<KeyLength> *k = (FixedLengthKey<KeyLength> *)key.p;
+  return btree.insert(*k, oid);
 }
 
 template<uint32_t KeyLength>

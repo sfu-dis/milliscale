@@ -17,6 +17,8 @@ static const uint64_t KB = 1024;
 static const uint64_t MB = KB * 1024;
 static const uint64_t GB = MB * 1024;
 
+static const std::string old_log_suffix = "_old";
+
 // Common settings
 extern bool tls_alloc;
 extern bool threadpool;
@@ -79,6 +81,9 @@ extern uint64_t benchmark_transactions;
 extern bool index_probe_only;
 extern uint32_t flusher_thread;
 extern uint32_t n_combine_log;
+extern bool auto_detect;
+extern bool recovery;
+extern uint32_t recovery_parallel_logs;
 
 inline bool buff_hit() {
   thread_local foedus::assorted::UniformRandom uniform_rng;

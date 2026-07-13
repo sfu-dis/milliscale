@@ -1,11 +1,19 @@
+#include <algorithm>
+#include <cstring>
 #include "engine.h"
+#include "chkpt-manager.h"
 #include "index/btree_wrapper.h"
 #include "index/hash_wrapper.h"
 #include "index/masstree_wrapper.h"
+#include "recovery.h"
 
 namespace ermia {
 
+CheckpointManager* chkptmgr = nullptr;
+
 std::atomic<uint32_t> log_counter{0};
+std::unordered_map<FID, UnorderedIndex*> index_fid_map;
+std::mutex index_fid_map_lock;
 
 dlog::tls_log *GetLog(uint32_t logid) {
   // XXX(tzwang): this lock may become a problem; should be safe to not use it -
@@ -16,17 +24,23 @@ dlog::tls_log *GetLog(uint32_t logid) {
 }
 
 dlog::tls_log *GetLog() {
-  thread_local dlog::tls_log *tlog_ptr = nullptr;
-  if (!tlog_ptr) {
-    uint32_t my_id = log_counter.fetch_add(1);
-    tlog_ptr = dlog::tlogs[my_id / ermia::config::n_combine_log];
+  thread_local uint32_t worker_id = static_cast<uint32_t>(-1);
+  thread_local bool affinity_set = false;
+  if (worker_id == static_cast<uint32_t>(-1)) {
+    worker_id = log_counter.fetch_add(1);
+  }
 
-    if (ermia::config::flusher_thread) {
-      uint32_t cpu = sched_getcpu();
-      for (uint32_t i = 0; i < ermia::config::s3_bucket_names.size(); ++i) {
-        tlog_ptr->write_thread_task[i].set_affinity(cpu);
-      }
+  uint32_t count = dlog::log_count.load(std::memory_order_acquire);
+  ALWAYS_ASSERT(count);
+  ALWAYS_ASSERT(count <= dlog::tlogs.size());
+  dlog::tls_log *tlog_ptr = dlog::tlogs[worker_id % count];
+
+  if (ermia::config::flusher_thread && !affinity_set) {
+    uint32_t cpu = sched_getcpu();
+    for (uint32_t i = 0; i < ermia::config::s3_bucket_names.size(); ++i) {
+      tlog_ptr->write_thread_task[i].set_affinity(cpu);
     }
+    affinity_set = true;
   }
   return tlog_ptr;
 }
@@ -40,9 +54,310 @@ Engine::Engine() {
   sm_oid_mgr::create();
   ALWAYS_ASSERT(oidmgr);
   ermia::dlog::initialize();
+  if (ermia::config::recovery) {
+    Recovery();
+  }
+  if (ermia::config::enable_chkpt) {
+    CheckpointManager::create(1024*1024, new ThreadLocalUringEngine());
+  }
 }
 
 Engine::~Engine() { ermia::dlog::uninitialize(); }
+
+void Engine::replayDDL() {
+  // DDL log is small, so to be simple, just read the entire file
+  std::string ddl_buff = ermia::dlog::read_ddl_log();
+  int read_bytes = ddl_buff.size();
+  int parsed_bytes = 0;
+  char* ptr = ddl_buff.data();
+  while (parsed_bytes < read_bytes) {
+    auto lb = (ermia::dlog::ddl_log*) ptr;
+    std::string name(lb->name, lb->size);
+    if (lb->t == ermia::dlog::ddl_log::TABLE_LOG) {
+      auto *td = TableDescriptor::New(name);
+      td->Recover(lb->first_fid, lb->second_fid, 0);
+    } else if (lb->t == ermia::dlog::ddl_log::PRIMARY_INDEX_LOG) {
+      // TODO: log index type
+      RecreateIndex(kIndexMasstree, lb->first_fid, name, true, lb->second_fid);
+    } else {
+      RecreateIndex(kIndexMasstree, lb->first_fid, name, false, lb->second_fid);
+    }
+    parsed_bytes += lb->size + sizeof(ermia::dlog::ddl_log);
+    ptr += lb->size + sizeof(ermia::dlog::ddl_log);
+  }
+}
+
+// Call recovery after dlog init, so we can reload the segments
+void Engine::Recovery() {
+
+  std::cout << "[Recovery] Start\n";
+  util::timer t;
+
+  // Recovery ddl
+  replayDDL();
+  uint64_t replay_start_csn = dlog::current_csn.load(std::memory_order_relaxed);
+  if (ermia::config::enable_chkpt) {
+    bool recovered_checkpoint = oidmgr->RecoverCheckpoint();
+    MARK_REFERENCED(recovered_checkpoint);
+    replay_start_csn = dlog::current_csn.load(std::memory_order_relaxed);
+  }
+
+  std::vector<mfile> files;
+  // map logid->[segment id, file idx in files]
+  std::map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>> segment_map;
+  getFiles(ermia::config::log_dir, ermia::config::s3_bucket_names[0], files);
+  parse_filenames(files, segment_map);
+  if (files.empty()) {
+    dlog::current_csn.store(
+        std::max<uint64_t>(dlog::current_csn.load(std::memory_order_relaxed), 1),
+        std::memory_order_relaxed);
+    for (uint32_t logid = 0; logid < ermia::config::worker_threads; logid++) {
+      GetLog(logid)->create_segment();
+      GetLog(logid)->current_segment()->start_offset = 0;
+    }
+    auto recovery_time = t.lap_ms();
+    std::cout << "[Recovery time(ms)] " << recovery_time << std::endl;
+    return;
+  }
+
+  for (auto& logid_segs : segment_map) {
+    auto& logid = logid_segs.first;
+    auto& segs = logid_segs.second;
+    if (logid >= dlog::tlogs.size()) {
+      continue;
+    }
+    int dfd = -1;
+    if (ermia::config::enable_uring) {
+      DIR *logdir = opendir(ermia::config::log_dir.c_str());
+      ALWAYS_ASSERT(logdir);
+      dfd = dirfd(logdir);
+    }
+    for (auto& segid_fileid : segs){
+      const char* filename = files[segid_fileid.second].filename.c_str();
+      GetLog(logid)->segments.push_back(new ermia::dlog::segment(dfd, filename, ermia::config::log_direct_io, false));
+    }
+  }
+
+  const uint64_t IO_SIZE = ermia::config::log_buffer_kb * 1024;
+  char* buff = new char[IO_SIZE];
+
+  std::vector<uint64_t> last_io_block_csns;
+  for (auto& kv: segment_map) {
+    auto& logid = kv.first;
+    auto& segs = kv.second;
+    if (logid >= dlog::tlogs.size() || segs.empty()) {
+      continue;
+    }
+
+    auto& last_seg = segs[segs.size() - 1];
+    mfile& f = files[last_seg.second];
+    if (f.size <= 0) {
+      continue;
+    }
+
+    uint64_t offset =
+        ((static_cast<uint64_t>(f.size) - 1) / IO_SIZE) * IO_SIZE;
+    std::memset(buff, 0, IO_SIZE);
+    int32_t bytes = read_page_from_file(f, IO_SIZE, offset, buff);
+    if (bytes <= 0) {
+      continue;
+    }
+    parse_page(buff, offset, [](ermia::dlog::log_block*) {},
+               [&](ermia::dlog::log_record* rec, uint64_t) {
+                 last_io_block_csns.push_back(rec->csn);
+               });
+  }
+
+  uint64_t upto_csn = 0;
+  if (!last_io_block_csns.empty()) {
+    uint64_t start_csn = *std::min_element(last_io_block_csns.begin(),
+                                           last_io_block_csns.end());
+    std::vector<uint64_t> recovery_csns;
+
+    for (auto& kv: segment_map) {
+      auto& logid = kv.first;
+      auto& segs = kv.second;
+      if (logid >= dlog::tlogs.size()) {
+        continue;
+      }
+
+      bool found_start = false;
+      for (auto seg_it = segs.rbegin();
+           seg_it != segs.rend() && !found_start; ++seg_it) {
+        mfile& f = files[seg_it->second];
+        if (f.size <= 0) {
+          continue;
+        }
+
+        uint64_t page_count =
+            (static_cast<uint64_t>(f.size) + IO_SIZE - 1) / IO_SIZE;
+        for (uint64_t page = page_count; page > 0; --page) {
+          uint64_t offset = (page - 1) * IO_SIZE;
+          std::memset(buff, 0, IO_SIZE);
+          int32_t bytes = read_page_from_file(f, IO_SIZE, offset, buff);
+          if (bytes <= 0) {
+            continue;
+          }
+
+          std::vector<uint64_t> page_csns;
+          parse_page(buff, offset, [](ermia::dlog::log_block*) {},
+                     [&](ermia::dlog::log_record* rec, uint64_t) {
+                       page_csns.push_back(rec->csn);
+                     });
+          for (auto csn_it = page_csns.rbegin(); csn_it != page_csns.rend();
+               ++csn_it) {
+            recovery_csns.push_back(*csn_it);
+            if (*csn_it <= start_csn) {
+              found_start = true;
+              break;
+            }
+          }
+          if (found_start) {
+            break;
+          }
+        }
+      }
+    }
+
+    std::sort(recovery_csns.begin(), recovery_csns.end());
+    recovery_csns.erase(std::unique(recovery_csns.begin(), recovery_csns.end()),
+                        recovery_csns.end());
+
+    upto_csn = recovery_csns.empty() ? 0 : recovery_csns.back();
+    uint64_t expected_csn = start_csn;
+    for (uint64_t csn : recovery_csns) {
+      if (csn < start_csn) {
+        continue;
+      }
+      if (csn > expected_csn) {
+        upto_csn = expected_csn == 0 ? 0 : expected_csn - 1;
+        break;
+      }
+      expected_csn = csn + 1;
+    }
+  }
+  delete[] buff;
+
+  std::vector<std::map<FID, OID>> himarks_vec(ermia::config::recovery_parallel_logs);
+  std::vector<uint64_t> max_recovery_csn(ermia::config::recovery_parallel_logs, 0);
+  std::atomic<uint64_t> next_idx{0};
+  ermia::thread::Thread::Task recovery_task = [&] (char *tid) { 
+    size_t id = static_cast<size_t>(reinterpret_cast<intptr_t>(tid));
+    auto& himarks = himarks_vec[id];
+    char* io_buff = new char[IO_SIZE];
+    for (;;) {
+      uint64_t file_idx = next_idx.fetch_add(1);
+      if (file_idx >= files.size()) {
+        break;
+      }
+      auto& file = files[file_idx];
+      uint64_t dep_csn;
+      parse_log_from_csn(file, io_buff, IO_SIZE, replay_start_csn,
+      [&](ermia::dlog::log_block* lb) {
+        dep_csn = lb->max_dep_csn;
+      }, 
+      [&](ermia::dlog::log_record* rec, uint64_t offset){
+        FID f = rec->fid;
+        OID o = rec->oid;
+        uint64_t csn = rec->csn;
+        const auto* tuple = reinterpret_cast<const ermia::dbtuple*>(rec->data);
+        uint32_t payload_size = tuple->size;
+        char* data = (char*) &tuple->value_start;
+
+        if (dep_csn <= upto_csn) {
+          max_recovery_csn[id] = std::max(csn, max_recovery_csn[id]);
+          if (rec->type == ermia::dlog::log_record::INSERT_KEY) {
+            // insert to index
+            varstr v(data, payload_size);
+            UnorderedIndex *idx = index_fid_map[f];
+            bool success = idx->RecoveryInsert(v, o);
+            MARK_REFERENCED(success);
+            if (ermia::config::enable_chkpt) {
+              idx->StoreKeyForCheckpoint(o, v);
+              if (idx->IsPrimary()) {
+                TableDescriptor *td = idx->GetTableDescriptor();
+                varstr *new_key =
+                    (varstr *)MM::allocate(sizeof(varstr) + v.size());
+                new (new_key) varstr((char *)new_key + sizeof(varstr), 0);
+                new_key->copy_from(&v);
+                oidmgr->ensure_file_size(td->GetKeyFid(), o + 1);
+                oidmgr->oid_put(td->GetKeyArray(), o,
+                                fat_ptr::make((void *)new_key,
+                                              INVALID_SIZE_CODE));
+              }
+            }
+          } else {
+            // insert to table
+            auto aligned_size = align_up(payload_size + sizeof(dlog::log_record));
+            auto size_code = encode_size_aligned(aligned_size);
+            fat_ptr pdest = LSN::make(file.log_id, offset, file.seg_num, size_code).to_ptr();
+            oidmgr->RecoveryUpsert(f, o, payload_size, data, csn, pdest);
+          }
+          auto [it, inserted] = himarks.try_emplace(f, o); 
+          if (!inserted) {
+            it->second = std::max(it->second, o);
+          }
+        }
+      });
+    }
+    delete[] io_buff;
+  };
+
+  std::vector<ermia::thread::Thread*> recovery_threads;
+  for (size_t i = 0; i < ermia::config::recovery_parallel_logs; i++) {
+    ermia::thread::Thread *thread = nullptr;
+    for (uint32_t n = 0; n < ermia::config::numa_nodes; n++) {
+      uint32_t node = (i + n) % ermia::config::numa_nodes;
+      thread = ermia::thread::GetThread(node, true);
+      if (thread) {
+        break;
+      }
+    }
+    if (!thread) {
+      break;
+    }
+    recovery_threads.push_back(thread);
+    thread->StartTask(recovery_task, reinterpret_cast<char *>(i));
+  }
+
+  if (recovery_threads.empty()) {
+    recovery_task(reinterpret_cast<char *>(0));
+  } else {
+    for (auto* th : recovery_threads) {
+      th->Join();
+      ermia::thread::PutThread(th);
+    }
+  }
+  recovery_threads.clear();
+  
+  // Compute oid himarks
+  std::map<FID, OID> final_himarks;
+  for (auto& himark_map : himarks_vec) {
+    for (auto& p : himark_map) {
+      auto [it, inserted] = final_himarks.try_emplace(p.first, p.second);    
+      if (!inserted) {
+        it->second = std::max(it->second, p.second);
+      }
+    }
+  }
+  for (auto& p : final_himarks) {
+    oidmgr->ensure_file_size(p.first, p.second + 1);
+    oidmgr->recreate_allocator(p.first, p.second + 1);
+  }
+  uint64_t log_recovered_csn =
+      1 + *std::max_element(max_recovery_csn.begin(), max_recovery_csn.end());
+  dlog::current_csn.store(
+      std::max(dlog::current_csn.load(std::memory_order_relaxed),
+               log_recovered_csn),
+      std::memory_order_relaxed);
+
+  for (uint32_t logid = 0; logid < ermia::config::worker_threads; logid++) {
+    GetLog(logid)->create_segment();
+    GetLog(logid)->current_segment()->start_offset = 0;
+  }
+  auto recovery_time = t.lap_ms();
+  std::cout << "[Recovery time(ms)] " << recovery_time << std::endl;
+}
 
 TableDescriptor *Engine::CreateTable(const char *name) {
   auto *td = TableDescriptor::New(name);
@@ -58,15 +373,13 @@ TableDescriptor *Engine::CreateTable(const char *name) {
     // char *log_space = (char *)malloc(sizeof(sm_tx_log));
     // ermia::sm_tx_log *log = ermia::logmgr->new_tx_log(log_space);
     td->Initialize();
-    // log->log_table(td->GetTupleFid(), td->GetKeyFid(), td->GetName());
-    // log->commit(nullptr);
-    // free(log_space);
+    ermia::dlog::log_table(td->GetTupleFid(), td->GetKeyFid(), td->GetName().length(), td->GetName().c_str());
   }
   return td;
 }
 
 void Engine::LogIndexCreation(bool primary, FID table_fid, FID index_fid,
-                              const std::string &index_name) {
+                              const std::string &index_name, uint16_t type) {
   /*
   if (!sm_log::need_recovery) {
     // Note: this will insert to the log and therefore affect min_flush_lsn,
@@ -83,6 +396,12 @@ void Engine::LogIndexCreation(bool primary, FID table_fid, FID index_fid,
     free(log_space);
   }
   */
+  if (primary) {
+    ermia::dlog::log_primary_index(table_fid, index_fid, index_name.size(), index_name.c_str());
+  } else {
+    ermia::dlog::log_secondary_index(table_fid, index_fid, index_name.size(), index_name.c_str());
+  }
+  
 }
 
 template <uint32_t KeyLength>
@@ -113,7 +432,43 @@ void Engine::CreateIndex(const uint16_t type, const char *table_name,
     td->AddSecondaryIndex(index, index_name);
   }
   FID index_fid = index->GetIndexFid();
-  LogIndexCreation(is_primary, td->GetTupleFid(), index_fid, index_name);
+  index_fid_map_lock.lock();
+  index_fid_map[index_fid] = index;
+  index_fid_map_lock.unlock();
+  LogIndexCreation(is_primary, td->GetTupleFid(), index_fid, index_name, type);
+}
+
+template <uint32_t KeyLength>
+void Engine::RecreateIndex(const uint16_t type, FID table_fid,
+                         const std::string &index_name, bool is_primary, FID idx_fid) {
+  auto *td = TableDescriptor::Get(table_fid);
+  ALWAYS_ASSERT(td);
+  UnorderedIndex *index = nullptr;
+  const char* table_name = td->name.c_str();
+  switch (type) {
+  case kIndexMasstree:
+    index = new ConcurrentMasstreeIndex(table_name, is_primary, idx_fid);
+    break;
+  case kIndexBTreeOLC:
+    index = new BTreeOLCIndex<KeyLength>(table_name, is_primary, idx_fid);
+    break;
+  case kIndexExHash:
+    index = new ExHashIndex<KeyLength>(table_name, is_primary, idx_fid);
+    break;
+  default:
+    LOG(FATAL) << "Unknown index type: " << type;
+    break;
+  }
+
+  if (is_primary) {
+    td->SetPrimaryIndex(index, index_name);
+  } else {
+    td->AddSecondaryIndex(index, index_name);
+  }
+  FID index_fid = index->GetIndexFid();
+  index_fid_map_lock.lock();
+  index_fid_map[index_fid] = index;
+  index_fid_map_lock.unlock();
 }
 
 void UnorderedIndex::GetVersion(transaction *t, rc_t &rc, varstr &value,
@@ -124,7 +479,7 @@ void UnorderedIndex::GetVersion(transaction *t, rc_t &rc, varstr &value,
                                            oid, t->GetXIDContext());
   volatile_write(rc._val,
                  tuple ? t->DoTupleRead(tuple, &value)._val : RC_FALSE);
-
+  ASSERT(rc._val == RC_TRUE);
 #ifndef SSN
   ASSERT(rc._val == RC_FALSE || rc._val == RC_TRUE);
 #endif
@@ -177,6 +532,8 @@ rc_t UnorderedIndex::InsertRecord(transaction *t, const varstr &key,
   ASSERT((char *)key.data() == (char *)&key + sizeof(varstr));
   if (!InsertOID(t, key, oid)) {
     if (config::enable_chkpt) {
+      oidmgr->ensure_file_size(table_descriptor->GetKeyFid(), oid + 1);
+
       volatile_write(table_descriptor->GetKeyArray()->get(oid)->_ptr, 0);
     }
     return rc_t{RC_ABORT_INTERNAL};
@@ -190,8 +547,8 @@ rc_t UnorderedIndex::InsertRecord(transaction *t, const varstr &key,
     varstr *new_key = (varstr *)MM::allocate(sizeof(varstr) + key.size());
     new (new_key) varstr((char *)new_key + sizeof(varstr), 0);
     new_key->copy_from(&key);
+    oidmgr->ensure_file_size(table_descriptor->GetKeyFid(), oid + 1);
     auto *key_array = table_descriptor->GetKeyArray();
-    key_array->ensure_size(oid);
     oidmgr->oid_put(key_array, oid,
                     fat_ptr::make((void *)new_key, INVALID_SIZE_CODE));
   }
@@ -218,6 +575,7 @@ rc_t UnorderedIndex::InsertColdRecord(transaction *t, const varstr &key,
   ASSERT((char *)key.data() == (char *)&key + sizeof(varstr));
   if (!InsertOID(t, key, oid)) {
     if (config::enable_chkpt) {
+      oidmgr->ensure_file_size(table_descriptor->GetKeyFid(), oid + 1);
       volatile_write(table_descriptor->GetKeyArray()->get(oid)->_ptr, 0);
     }
     return rc_t{RC_ABORT_INTERNAL};
@@ -232,7 +590,8 @@ rc_t UnorderedIndex::InsertColdRecord(transaction *t, const varstr &key,
     new (new_key) varstr((char *)new_key + sizeof(varstr), 0);
     new_key->copy_from(&key);
     auto *key_array = table_descriptor->GetKeyArray();
-    key_array->ensure_size(oid);
+    oidmgr->ensure_file_size(table_descriptor->GetKeyFid(), oid + 1);
+
     oidmgr->oid_put(key_array, oid,
                     fat_ptr::make((void *)new_key, INVALID_SIZE_CODE));
   }
@@ -296,10 +655,24 @@ rc_t Table::Remove(transaction &t, OID oid) {
 
 ////////////////// End of Table interfaces //////////
 
-UnorderedIndex::UnorderedIndex(std::string table_name, bool is_primary)
+void UnorderedIndex::StoreKeyForCheckpoint(OID oid, const varstr &key) {
+  oidmgr->ensure_file_size(self_fid, oid + 1);
+  varstr *new_key = (varstr *)MM::allocate(sizeof(varstr) + key.size());
+  new (new_key) varstr((char *)new_key + sizeof(varstr), 0);
+  new_key->copy_from(&key);
+  oidmgr->oid_put(oidmgr->get_array(self_fid), oid,
+                  fat_ptr::make((void *)new_key, INVALID_SIZE_CODE));
+}
+
+UnorderedIndex::UnorderedIndex(std::string table_name, bool is_primary, FID recovery_fid)
     : is_primary(is_primary) {
   table_descriptor = TableDescriptor::Get(table_name);
-  self_fid = oidmgr->create_file(true);
+  if (recovery_fid == -1) {
+    self_fid = oidmgr->create_file(true);
+  } else {
+    oidmgr->recreate_file(recovery_fid);
+    self_fid = recovery_fid;
+  }
 }
 
 // Explicit instantiations

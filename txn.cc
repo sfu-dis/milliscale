@@ -12,6 +12,7 @@ transaction::transaction(uint64_t flags, str_arena &sa)
     masstree_absent_set.clear();
   }
   write_set.clear();
+  index_set.clear();
 #if defined(SSN)
   read_set.clear();
 #endif
@@ -155,17 +156,30 @@ rc_t transaction::si_commit() {
   dlog::log_block *lb = nullptr;
   dlog::tlog_lsn lb_lsn = dlog::INVALID_TLOG_LSN;
   uint64_t segnum = -1;
+  bool tried_dependency_log = false;
   
-  if (ermia::config::dependency_aware && this->is_local_log && this->prev_log_id != kInvalidLogID) {
+allocate_retry:
+  if (!tried_dependency_log && ermia::config::dependency_aware &&
+      this->is_local_log && this->prev_log_id != kInvalidLogID) {
     log = GetLog(this->prev_log_id); // dependency aware log, put transaction to the same log as it's dependency
+    tried_dependency_log = true;
   }
   if (ermia::config::optimize_dequeue == 2) {
     this->max_dependent_csn = xc->begin-1;
   }
   // When allocate log block, will create csn, enqueue csn and set first/last csn
   // need to call it no matter log_size is 0
-  lb = log->allocate_log_block(log_size, &lb_lsn, &segnum, this);
-
+  bool retry = false;
+  lb = log->allocate_log_block(log_size, &lb_lsn, &segnum, this, retry);
+  if (retry) {
+    log = GetLog();
+    lb_lsn = dlog::INVALID_TLOG_LSN;
+    segnum = -1;
+    goto allocate_retry;
+  }
+  if (lb) {
+    lb->max_dep_csn = this->max_dependent_csn;
+  }
   // For read only transaction, it is possible that the transaction can be committed
   if (xc->end < ermia::pcommit::global_upto_csn) {
     log->tcommitter.dequeue_committed_xcts(true, true);
@@ -174,6 +188,18 @@ rc_t transaction::si_commit() {
   // here first before toggling the CSN's "committed" bit. But we can actually
   // do it first, and generate the log block as we scan the write set once,
   // leveraging pipelined commit!
+
+  for (uint32_t i = 0; i < index_set.size(); ++i) {
+    auto &w = index_set[i];
+    Object *object = w.get_object();
+    dbtuple *tuple = (dbtuple *)object->GetPayload();
+
+    // Populate log block and obtain persistent address
+    uint32_t off = lb->payload_size;
+    auto ret_off = dlog::log_insert_key(lb, w.fid, w.oid, (char *)tuple, w.size);
+    ALWAYS_ASSERT(ret_off == off);
+    ALWAYS_ASSERT(lb->payload_size <= lb->capacity);
+  }
 
   // Post-commit: install CSN to tuples (traverse write-tuple), generate log
   // records, etc.
@@ -184,10 +210,10 @@ rc_t transaction::si_commit() {
 
     // Populate log block and obtain persistent address
     uint32_t off = lb->payload_size;
-    if (w.is_insert) {
+    if (w.type == write_record_t::record_type::INSERT) {
       auto ret_off = dlog::log_insert(lb, w.fid, w.oid, (char *)tuple, w.size);
       ALWAYS_ASSERT(ret_off == off);
-    } else {
+    } else if (w.type == write_record_t::record_type::UPDATE) {
       // Use the delta if delta is provided, otherwise use the full record
       auto ret_off = dlog::log_update(lb, w.fid, w.oid, w.delta ? w.delta : (char *)tuple, w.size, w.delta);
       ALWAYS_ASSERT(ret_off == off);
@@ -224,7 +250,7 @@ rc_t transaction::si_commit() {
       ASSERT(tuple->GetObject()->GetCSN().asi_type() == fat_ptr::ASI_CSN);
     }
   }
-  if (write_set.size()) {
+  if (write_set.size() || index_set.size()) {
     log->holes --;
   }
   ALWAYS_ASSERT(!lb || lb->payload_size == lb->capacity);
@@ -317,7 +343,7 @@ rc_t transaction::Update(TableDescriptor *td, OID oid, varstr *v,
       */
       add_to_write_set(tuple_array->get(oid), tuple_fid, oid, 
                        delta ? delta_size : tuple->size,
-                       false, false, delta_offset, delta);
+                      write_record_t::record_type::UPDATE, false, delta_offset, delta);
       prev_persistent_ptr = prev_obj->GetPersistentAddress();
     }
 
@@ -348,7 +374,7 @@ OID transaction::Insert(TableDescriptor *td, bool cold, varstr *value,
   oidmgr->oid_put_new(tuple_array, oid, new_head);
 
   ASSERT(tuple->size == value->size());
-  add_to_write_set(tuple_array->get(oid), tuple_fid, oid, tuple->size, true,
+  add_to_write_set(tuple_array->get(oid), tuple_fid, oid, tuple->size, write_record_t::record_type::INSERT,
                    cold);
 
   if (out_tuple) {
@@ -359,17 +385,21 @@ OID transaction::Insert(TableDescriptor *td, bool cold, varstr *value,
 
 void transaction::LogIndexInsert(UnorderedIndex *index, OID oid,
                                  const varstr *key) {
-  /*
+  
   // Note: here we log the whole key varstr so that recovery can figure out the
   // real key length with key->size(), otherwise it'll have to use the decoded
   // (inaccurate) size (and so will build a different index).
-  auto record_size = align_up(sizeof(varstr) + key->size());
-  ASSERT((char *)key->data() == (char *)key + sizeof(varstr));
-  auto size_code = encode_size_aligned(record_size);
-  log->log_insert_index(index->GetIndexFid(), oid,
-                        fat_ptr::make((void *)key, size_code),
-                        DEFAULT_ALIGNMENT_BITS, NULL);
-  */
+  // auto record_size = align_up(sizeof(varstr) + key->size());
+  // ASSERT((char *)key->data() == (char *)key + sizeof(varstr));
+  // auto size_code = encode_size_aligned(record_size);
+  // log->log_insert_index(index->GetIndexFid(), oid,
+  //                       fat_ptr::make((void *)key, size_code),
+  //                       DEFAULT_ALIGNMENT_BITS, NULL);
+
+  fat_ptr obj = Object::Create(key);
+  dbtuple* t = (dbtuple *)((Object *)obj.offset())->GetPayload();
+  ASSERT(t->size == key->size());
+  add_to_index_set(obj, index->GetIndexFid(), oid, t->size);
 }
 
 rc_t transaction::DoTupleRead(dbtuple *tuple, varstr *out_v) {

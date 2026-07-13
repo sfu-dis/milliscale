@@ -11,17 +11,23 @@ dlog::tls_log *GetLog();
 dlog::tls_log *GetLog(uint32_t logid);
 
 struct Engine {
-  void LogIndexCreation(bool primary, FID table_fid, FID index_fid, const std::string &index_name);
+  void LogIndexCreation(bool primary, FID table_fid, FID index_fid, const std::string &index_name, uint16_t type);
   template<uint32_t KeyLength = 8>
   void CreateIndex(const uint16_t type, const char *table_name, const std::string &index_name, bool is_primary);
+  
+  template<uint32_t KeyLength = 8>
+  void RecreateIndex(const uint16_t type, FID table_fid, const std::string &index_name, bool is_primary, FID idx_fid);
 
   Engine();
   ~Engine();
+  void replayDDL();
 
   // All supported index types
   static const uint16_t kIndexMasstree = 0x1;
   static const uint16_t kIndexBTreeOLC = 0x2;
   static const uint16_t kIndexExHash = 0x3;
+
+  void Recovery();
 
   // Create a table without any index (at least yet)
   TableDescriptor *CreateTable(const char *name);
@@ -67,6 +73,18 @@ struct Engine {
 
   inline rc_t Commit(transaction *t) {
     rc_t rc = t->commit();
+    auto *log = GetLog(ermia::thread::MyId());
+    if (log->iostate.load(std::memory_order_acquire) ==
+        dlog::tls_log::IOState::Flushing) {
+      std::unique_lock<std::mutex> lg(log->lock, std::try_to_lock);
+      if (lg.owns_lock() &&
+          log->iostate.load(std::memory_order_acquire) ==
+              dlog::tls_log::IOState::Flushing) {
+        if (log->poll_flush(true)) {
+          log->iostate = dlog::tls_log::IOState::Idle;
+        }
+      }
+    }
     return rc;
   }
 

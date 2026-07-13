@@ -11,11 +11,13 @@ template <uint32_t KeyLength>
 struct BTreeOLCIndex : public OrderedIndex {
   btreeolc::BTreeOLC<FixedLengthKey<KeyLength>, OID> btree;
 
-  BTreeOLCIndex(const char *table_name, bool primary)
-    : OrderedIndex(table_name, primary) {}
+  BTreeOLCIndex(const char *table_name, bool primary, FID recovery_fid=-1)
+    : OrderedIndex(table_name, primary, recovery_fid) {}
   ~BTreeOLCIndex() {}
 
   bool InsertOID(transaction *t, const varstr &key, OID oid) override;
+  
+  bool RecoveryInsert(const varstr &key, OID oid) override;
 
   rc_t Scan(transaction *t, const varstr &start_key, const varstr *end_key, ScanCallback &callback) override;
   rc_t ReverseScan(transaction *t, const varstr &start_key, const varstr *end_key, ScanCallback &callback) override { return {RC_FALSE}; }

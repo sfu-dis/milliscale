@@ -15,10 +15,17 @@ bool ExHashIndex<KeyLength>::InsertOID(transaction *t, const varstr &key, OID oi
   if (inserted) {
     t->LogIndexInsert(this, oid, &key);
     if (config::enable_chkpt) {
-      auto *key_array = GetTableDescriptor()->GetKeyArray();
-      volatile_write(key_array->get(oid)->_ptr, 0);
+      StoreKeyForCheckpoint(oid, key);
     }
   }
+  return inserted;
+}
+
+template<uint32_t KeyLength>
+bool ExHashIndex<KeyLength>::RecoveryInsert(const varstr &key, OID oid) {
+  FixedLengthKey<KeyLength> *k = (FixedLengthKey<KeyLength> *)key.p;
+  dash_eh::Value_t v = (dash_eh::Value_t)(uint64_t)oid;
+  bool inserted = hash_table.Insert(*k, v) == 0;
   return inserted;
 }
 

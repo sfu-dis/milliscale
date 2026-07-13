@@ -30,11 +30,14 @@ thread_local char general_bucket_name[GENERAL_BUCKET_OBJ_NAME_BUFSZ];
 
 std::vector<tls_log *> tlogs;
 
+std::atomic<uint32_t> log_count(0);
+
 std::atomic<uint64_t> current_csn(1);
 
 std::vector<uint64_t> thread_begin_csns;
 
 std::mutex tls_log_lock;
+std::mutex log_count_adjust_lock;
 
 thread_local struct io_uring tls_read_ring;
 
@@ -77,6 +80,92 @@ void wakeup_commit_daemon() {
   pcommit_daemon_cond.notify_all();
 }
 
+void try_adjust_log_count(tls_log *completed_log) {
+  if (!ermia::config::auto_detect) {
+    return;
+  }
+
+  std::unique_lock<std::mutex> adjust_lg(log_count_adjust_lock,
+                                         std::try_to_lock);
+  if (!adjust_lg.owns_lock()) {
+    return;
+  }
+
+  if (!completed_log->last_logbuf_fill_duration_us ||
+      !completed_log->last_logbuf_io_duration_us) {
+    return;
+  }
+
+  uint32_t old_count = log_count.load(std::memory_order_acquire);
+  double fill_time_us =
+      static_cast<double>(completed_log->last_logbuf_fill_duration_us);
+  double io_time_us =
+      static_cast<double>(completed_log->last_logbuf_io_duration_us);
+
+  if (old_count > 1) {
+    double new_fill_time_us =
+        fill_time_us * static_cast<double>(old_count) /
+        static_cast<double>(old_count - 1);
+    if (new_fill_time_us > io_time_us * 1.8) {
+      tls_log *inactive_log = tlogs[old_count - 1];
+      std::unique_lock<std::mutex> inactive_lg(inactive_log->lock,
+                                               std::try_to_lock);
+      if (!inactive_lg.owns_lock()) {
+        return;
+      }
+      if (inactive_log->iostate.load(std::memory_order_acquire) ==
+          tls_log::IOState::Flushing) {
+        if (inactive_log->poll_flush(true)) {
+          inactive_log->iostate = tls_log::IOState::Idle;
+        } else {
+          return;
+        }
+      }
+      inactive_log->active.store(false, std::memory_order_release);
+      log_count.store(old_count - 1, std::memory_order_release);
+      if (!inactive_log->nothing_in_logbuf()) {
+        if (inactive_log->last_open_new_logbuf !=
+            std::chrono::steady_clock::time_point{}) {
+          auto end = std::chrono::steady_clock::now();
+          inactive_log->last_logbuf_fill_duration_us =
+              std::chrono::duration_cast<std::chrono::microseconds>(
+                  end - inactive_log->last_open_new_logbuf)
+                  .count();
+          inactive_log->logbuf_fill_total_duration_us +=
+              inactive_log->last_logbuf_fill_duration_us;
+          ++inactive_log->logbuf_fill_count;
+        }
+        uint64_t aligned_size = inactive_log->logbuf_size;
+        inactive_log->current_lsn +=
+            (aligned_size - inactive_log->logbuf_offset);
+        inactive_log->logbuf_offset = aligned_size;
+        inactive_log->issue_flush(inactive_log->active_logbuf,
+                                  inactive_log->logbuf_offset);
+      }
+      return;
+    }
+  }
+
+  if (fill_time_us * 0.9 < io_time_us && old_count < tlogs.size()) {
+    tls_log *active_log = tlogs[old_count];
+    std::unique_lock<std::mutex> active_lg(active_log->lock, std::try_to_lock);
+    if (!active_lg.owns_lock()) {
+      return;
+    }
+    if (active_log->iostate.load(std::memory_order_acquire) ==
+        tls_log::IOState::Flushing) {
+      if (active_log->poll_flush(true)) {
+        active_log->iostate = tls_log::IOState::Idle;
+      } else {
+        return;
+      }
+    }
+    active_log->last_open_new_logbuf = std::chrono::steady_clock::now();
+    active_log->active.store(true, std::memory_order_release);
+    log_count.store(old_count + 1, std::memory_order_release);
+  }
+}
+
 void commit_daemon() {
   auto timeout = std::chrono::milliseconds(ermia::config::pcommit_timeout_ms);
   while (!ermia::config::IsShutdown()) {
@@ -91,9 +180,14 @@ void commit_daemon() {
 }
 
 void initialize() {
-  uint32_t max_threads =
+  uint32_t max_logs =
       std::max(ermia::config::loaders, ermia::config::worker_threads);
-  for (uint32_t i = 0; i < max_threads; i++) {
+  ALWAYS_ASSERT(ermia::config::n_combine_log);
+  log_count.store((max_logs + ermia::config::n_combine_log - 1) /
+                      ermia::config::n_combine_log,
+                  std::memory_order_release);
+
+  for (uint32_t i = 0; i < max_logs; i++) {
     dlog::tls_log *tlog = new dlog::tls_log();
     dlog::tlogs.push_back(tlog);
     tlog->initialize(config::log_dir.c_str(), dlog::tlogs.size() - 1,
@@ -202,6 +296,8 @@ void tls_log::initialize(const char *log_dir, uint32_t log_id, uint32_t node,
   id = log_id;
   numa_node = node;
   iostate = IOState::Idle;
+  active.store(log_id < log_count.load(std::memory_order_acquire),
+               std::memory_order_release);
   logbuf_size = logbuf_kb * ermia::config::KB;
   int pmret = posix_memalign((void **)&logbuf[0], PAGE_SIZE, logbuf_size * 3);
   LOG_IF(FATAL, pmret) << "Unable to allocate log buffers";
@@ -212,19 +308,32 @@ void tls_log::initialize(const char *log_dir, uint32_t log_id, uint32_t node,
   LOG_IF(FATAL, segment_size > SEGMENT_MAX_SIZE)
       << "Unable to allocate log buffer";
   holes = 0;
-  logbuf_offset = 0;
   active_logbuf = logbuf[0];
+  ((io_block*) active_logbuf)->num = 0;
+  logbuf_offset = sizeof(io_block);
 
   durable_lsn = 0;
   current_lsn = 0;
   flush_count = 0;
+  last_open_new_logbuf = std::chrono::steady_clock::now();
+  last_logbuf_fill_duration_us = 0;
+  logbuf_fill_total_duration_us = 0;
+  logbuf_fill_count = 0;
+  current_io_start = std::chrono::steady_clock::time_point{};
+  last_logbuf_io_duration_us = 0;
+  logbuf_io_total_duration_us = 0;
+  logbuf_io_count = 0;
+  lock_acquire_count = 0;
+  failed_lock_acquire_count = 0;
+  lock_contention_ewma = 0;
 
   // Create a new segment
   segments.reserve(
       16); // Each log will have at most 16 segments (base on fat_ptr)
-  create_segment();
-  current_segment()->start_offset = current_lsn;
-
+  if (!ermia::config::recovery) {
+    create_segment();
+    current_segment()->start_offset = current_lsn;
+  }
   DLOG(INFO) << "Log " << id << ": new segment " << segments.size() - 1
              << ", start lsn " << current_lsn;
 
@@ -268,8 +377,17 @@ void tls_log::initialize(const char *log_dir, uint32_t log_id, uint32_t node,
 
 void tls_log::uninitialize() {
   std::lock_guard<std::mutex> lg(lock);
-  if (logbuf_offset) {
-    uint64_t aligned_size = align_up_flush_size(logbuf_offset);
+  if (!nothing_in_logbuf()) {
+    if (last_open_new_logbuf != std::chrono::steady_clock::time_point{}) {
+      auto end = std::chrono::steady_clock::now();
+      last_logbuf_fill_duration_us =
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              end - last_open_new_logbuf)
+              .count();
+      logbuf_fill_total_duration_us += last_logbuf_fill_duration_us;
+      ++logbuf_fill_count;
+    }
+    uint64_t aligned_size = logbuf_size;
     current_lsn += (aligned_size - logbuf_offset);
     logbuf_offset = aligned_size;
     issue_flush(active_logbuf, logbuf_offset);
@@ -285,11 +403,21 @@ void tls_log::enqueue_flush() {
     iostate = IOState::Idle;
   }
 
-  if (logbuf_offset) {
-    uint64_t aligned_size = align_up_flush_size(logbuf_offset);
+  if (!nothing_in_logbuf()) {
+    if (last_open_new_logbuf != std::chrono::steady_clock::time_point{}) {
+      auto end = std::chrono::steady_clock::now();
+      last_logbuf_fill_duration_us =
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              end - last_open_new_logbuf)
+              .count();
+      logbuf_fill_total_duration_us += last_logbuf_fill_duration_us;
+      ++logbuf_fill_count;
+    }
+    uint64_t aligned_size = logbuf_size;
     current_lsn += (aligned_size - logbuf_offset);
     logbuf_offset = aligned_size;
     issue_flush(active_logbuf, logbuf_offset);
+    last_open_new_logbuf = std::chrono::steady_clock::now();
     if (ermia::config::sync_io) {
       poll_flush();
       iostate = IOState::Idle;
@@ -304,8 +432,17 @@ void tls_log::last_flush() {
     iostate = IOState::Idle;
   }
 
-  if (logbuf_offset) {
-    uint64_t aligned_size = align_up_flush_size(logbuf_offset);
+  if (!nothing_in_logbuf()) {
+    if (last_open_new_logbuf != std::chrono::steady_clock::time_point{}) {
+      auto end = std::chrono::steady_clock::now();
+      last_logbuf_fill_duration_us =
+          std::chrono::duration_cast<std::chrono::microseconds>(
+              end - last_open_new_logbuf)
+              .count();
+      logbuf_fill_total_duration_us += last_logbuf_fill_duration_us;
+      ++logbuf_fill_count;
+    }
+    uint64_t aligned_size = logbuf_size;
     current_lsn += (aligned_size - logbuf_offset);
     logbuf_offset = aligned_size;
     issue_flush(active_logbuf, logbuf_offset);
@@ -433,6 +570,7 @@ void tls_log::issue_flush(const char *buf, uint64_t size) {
   while (holes) {
   };
 
+  current_io_start = std::chrono::steady_clock::now();
   if (ermia::config::enable_s3) {
     char *key = current_segment()->name;
     uint64_t offset = current_segment()->size;
@@ -573,6 +711,29 @@ bool tls_log::poll_flush(bool peek_once) {
 
   durable_lsn += last_flush_size;
   last_segment->size.fetch_add(last_flush_size, std::memory_order_release);
+  if (current_io_start != std::chrono::steady_clock::time_point{}) {
+    auto io_end = std::chrono::steady_clock::now();
+    last_logbuf_io_duration_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            io_end - current_io_start)
+            .count();
+    logbuf_io_total_duration_us += last_logbuf_io_duration_us;
+    ++logbuf_io_count;
+    current_io_start = std::chrono::steady_clock::time_point{};
+  }
+
+  constexpr double kLockContentionEwmaAlpha = 0.1;
+  double lock_contention_sample =
+      lock_acquire_count
+          ? static_cast<double>(failed_lock_acquire_count) /
+                static_cast<double>(lock_acquire_count)
+          : 0;
+  lock_contention_ewma =
+      kLockContentionEwmaAlpha * lock_contention_sample +
+      (1 - kLockContentionEwmaAlpha) * lock_contention_ewma;
+  lock_acquire_count = 0;
+  failed_lock_acquire_count = 0;
+  try_adjust_log_count(this);
 
   // get last tls durable csn
   uint64_t last_tls_durable_csn =
@@ -625,7 +786,9 @@ uint64_t tls_log::align_up_flush_size(uint64_t size) {
 log_block *tls_log::allocate_log_block(uint32_t payload_size,
                                        uint64_t *out_cur_lsn,
                                        uint64_t *out_seg_num,
-                                       transaction *txn) {
+                                       transaction *txn,
+                                       bool &retry) {
+  retry = false;
   uint32_t alloc_size = payload_size + sizeof(log_block);
   LOG_IF(FATAL, alloc_size > logbuf_size) << "Total size too big";
   txn->xc->logid = id;
@@ -635,13 +798,37 @@ log_block *tls_log::allocate_log_block(uint32_t payload_size,
   if (payload_size == 0) {
     txn->xc->end = txn->xc->begin - 1;
     if (ermia::config::pcommit) {
-      std::lock_guard<std::mutex> lg(lock);
+      std::unique_lock<std::mutex> lg(lock, std::defer_lock);
+      bool try_lock_failed = !lg.try_lock();
+      if (try_lock_failed) {
+        lg.lock();
+      }
+      ++lock_acquire_count;
+      if (try_lock_failed) {
+        ++failed_lock_acquire_count;
+      }
+      if (!active.load(std::memory_order_acquire)) {
+        retry = true;
+        return nullptr;
+      }
       enqueue_committed_xct(txn->xc->end, txn->max_dependent_csn, txn->is_local_log);
     }
     return nullptr;
   }
 
-  std::lock_guard<std::mutex> lg(lock);
+  std::unique_lock<std::mutex> lg(lock, std::defer_lock);
+  bool try_lock_failed = !lg.try_lock();
+  if (try_lock_failed) {
+    lg.lock();
+  }
+  ++lock_acquire_count;
+  if (try_lock_failed) {
+    ++failed_lock_acquire_count;
+  }
+  if (!active.load(std::memory_order_acquire)) {
+    retry = true;
+    return nullptr;
+  }
 
   bool is_first_txn = is_buffer_head(payload_size);
   if (tcommitter.is_empty() && is_first_txn) {
@@ -667,14 +854,18 @@ log_block *tls_log::allocate_log_block(uint32_t payload_size,
   // or we need to create a new segment for this log block,
   // flush the active logbuf, and switch to the other logbuf.
   if (alloc_size + logbuf_offset > logbuf_size || create_new_segment) {
-    if (logbuf_offset) {
+    if (!nothing_in_logbuf()) {
       if (last_open_new_logbuf != std::chrono::steady_clock::time_point{}) {
         auto end = std::chrono::steady_clock::now();
-        ++fill_buf_nb_times;
-        fill_buf_tot_duration_us += std::chrono::duration_cast<std::chrono::microseconds>(end - last_open_new_logbuf).count();
+        last_logbuf_fill_duration_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                end - last_open_new_logbuf)
+                .count();
+        logbuf_fill_total_duration_us += last_logbuf_fill_duration_us;
+        ++logbuf_fill_count;
       }
       // Pad to 4K boundary if dio is enabled
-      uint64_t aligned_size = align_up_flush_size(logbuf_offset);
+      uint64_t aligned_size = logbuf_size;
       current_lsn += (aligned_size - logbuf_offset);
       logbuf_offset = aligned_size;
       issue_flush(active_logbuf, logbuf_offset);
@@ -696,6 +887,7 @@ log_block *tls_log::allocate_log_block(uint32_t payload_size,
       // TODO(jiatang): chkpt, for S3 Express Onezone, issue copy then delete if data is large enough
     }
   }
+  ((io_block*) active_logbuf)->num ++;
 
   log_block *lb = (log_block *)(active_logbuf + logbuf_offset);
   logbuf_offset += alloc_size;
@@ -730,12 +922,12 @@ void tls_log::enqueue_committed_xct(uint64_t csn, uint64_t max_dependent_csn, bo
   tcommitter._commit_queue->push_back(csn, max_dependent_csn, is_local_log);
 }
 
-segment::segment(int dfd, const char *segname, bool dio)
+segment::segment(int dfd, const char *segname, bool dio, bool trunc)
     : size(0), expected_size(0), append_count(0) {
   // [dio] ignore if storing in S3
   if (!ermia::config::enable_uring) {
     fd = -1;
-  } else {
+  } else if (trunc) {
     int flags = dio ? O_DIRECT : O_SYNC;
     flags |= (O_RDWR | O_CREAT | O_TRUNC);
     fd = openat(dfd, segname, flags, 0644);
