@@ -3,8 +3,6 @@
 Milliscale is a high-performance database system optimised for object storage and main memory. 
 It offers low-latency, high throughput and low cost OLTP by leveraging low-latency object storage (AWS S3 Express One Zone) and in-memory and multicore optimisations.
 
-See more details in our technical report here: https://arxiv.org/pdf/2603.02108
-
 ## Environment configurations
 Step 1: Software dependencies
 * cmake
@@ -20,6 +18,8 @@ Example for Ubuntu
 ```
 $ sudo apt-get install cmake gcc-10 g++-10 libnuma-dev libgflags-dev libgoogle-glog-dev liburing-dev
 ```
+
+Install AWS SDK: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
 
 Step 2: Make sure you have enough huge pages
 
