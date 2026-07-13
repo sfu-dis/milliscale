@@ -21,8 +21,6 @@ Example for Ubuntu
 $ sudo apt-get install cmake gcc-10 g++-10 libnuma-dev libgflags-dev libgoogle-glog-dev liburing-dev
 ```
 
-Install AWS SDK: https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
-
 Step 2: Make sure you have enough huge pages
 
 Milliscale uses `mmap` with `MAP_HUGETLB` (available after Linux 2.6.32) to allocate huge pages. Almost all memory allocations come from the space carved out here. Assuming the default huge page size is 2MB, the command below will allocate 2x MB of memory:
@@ -88,7 +86,7 @@ TPC-C
 -null_log_device=0 \
 -pcommit=1 \
 -node_memory_gb=40 \
--tpcc_scale_factor=100 \
+-tpcc_scale_factor=36 \
 -seconds=10 \
 -threads=16 \
 -log_buffer_kb=2048 \
@@ -112,3 +110,4 @@ TPC-C
 * `-optimize_dequeue`: 0: Dequeue transactions based on their CSN. 1: Dequeue transactions based on their maximum dependency CSN. 2: Dequeue transactions based on their start timestamp.
 * `-dependency_aware`: Dequeue a transaction if it is the head of the queue and all of its **direct** predcessors are local. Also try to place the transaction's log records to the same log as its dependencies'.
 * `-enable_s3=1 -flusher_thread=1 -s3_bucket_names=[bucket_1, bucket_2]`: Using S3 Express One Zone for log storage.
+* `-auto_detect`: Atomically detect the log count base on the buffer filling time and I/O latency.
