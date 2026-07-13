@@ -766,8 +766,6 @@ void tls_log::create_segment() {
   }
   segments.push_back(
       new segment(dfd, segment_name_buf, ermia::config::log_direct_io));
-
-  // TODO(jiatangz): recycle old segment
 }
 
 uint64_t tls_log::align_up_flush_size(uint64_t size) {
@@ -884,7 +882,6 @@ log_block *tls_log::allocate_log_block(uint32_t payload_size,
          current_segment()->append_count >= ermia::config::max_appends)) {
       create_segment();
       current_segment()->start_offset = current_lsn;
-      // TODO(jiatang): chkpt, for S3 Express Onezone, issue copy then delete if data is large enough
     }
   }
   ((io_block*) active_logbuf)->num ++;

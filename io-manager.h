@@ -1,7 +1,5 @@
 #pragma once
 
-// TODO(jiatangz): Separate the file to .cc and .h
-
 #include <functional>
 #include <liburing.h>
 #include <stdexcept>

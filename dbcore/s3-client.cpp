@@ -660,7 +660,6 @@ std::shared_ptr<HttpResponse> CustomCurlHttpClient::MakeRequest(
     should_yield = false;
   } else {
     auto data = (ermia::dlog::s3_meta_data*) CoroTask::current()->arg_;
-    // TODO(jiatangz): Check data is nullptr
     if (!data->multi_handle) {
       data->multi_handle = curl_multi_init();
     }
