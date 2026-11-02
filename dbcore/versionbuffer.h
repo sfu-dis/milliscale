@@ -4,9 +4,10 @@
 #include "serial.h"
 #include "sm-object.h"
 #include "../tuple.h"
+#include "sm-config.h"
 
-constexpr int VERSION_BUFFER_CAPACITY = 200;  // It might be a good idea to let caller pass capacity (so threads can
-                                              // ensure enough memory
+constexpr int VERSION_BUFFER_CAPACITY = 200 * ermia::config::MB;  // It might be a good idea to let caller pass capacity
+                                              // (so threads can ensure enough memory)
 
 class VersionBuffer {
 public:
