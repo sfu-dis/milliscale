@@ -70,7 +70,6 @@ public:
 
     void* peek_front()
     {
-        // lets assume we have something in the ring for now since we will need to track empty
         if (used == 0) return nullptr;  // empty ring
         return pointer + head;
     }

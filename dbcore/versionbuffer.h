@@ -5,7 +5,8 @@
 #include "sm-object.h"
 #include "../tuple.h"
 
-constexpr int VERSION_BUFFER_CAPACITY = 200;
+constexpr int VERSION_BUFFER_CAPACITY = 200;  // It might be a good idea to let caller pass capacity (so threads can
+                                              // ensure enough memory
 
 class VersionBuffer {
 public:
@@ -16,11 +17,14 @@ public:
 
     void* allocate(size_t size)
     {
+        if (size == 0 || size > VERSION_BUFFER_CAPACITY) return nullptr;
         auto result = ringbuffer_.try_reserve(size);
         // result is nullptr if we have no space; must evict
         while (!result)
         {
             auto* first_element = ringbuffer_.peek_front();
+            if (!first_element) return nullptr;
+
             // for now, lets assume we store Objects. Then, we would have gotten back Object*
             auto* first_obj = static_cast<ermia::Object*>(first_element);
             auto* tuple = reinterpret_cast<ermia::dbtuple*>(first_obj->GetPayload());
