@@ -24,6 +24,7 @@ public:
         {
             // then we are good to allocate
             tail += size;
+            used += size;
         }
         else
         {
@@ -39,6 +40,7 @@ public:
                 // So if head > size, then we have enough space in front of head for our new object
                 wrap_around = tail;
                 tail = size;
+                used += size;
                 return pointer;
             }
             return nullptr;
@@ -59,15 +61,17 @@ public:
         head += size;
         if (head == wrap_around || head == capacity_) {
             head = 0;
-            wrap_around = capacity_;
+            wrap_around = capacity_;  // we reset the wrap around
         }
+
+        used -= size;
         return pointer + old_head;
     }
 
     void* peek_front()
     {
         // lets assume we have something in the ring for now since we will need to track empty
-        // TODO: add is_empty check
+        if (used == 0) return nullptr;  // empty ring
         return pointer + head;
     }
 
@@ -80,6 +84,7 @@ private:
     uint64_t tail;
     const uint64_t capacity_;  // in bytes, not element count
     uint64_t wrap_around;
+    uint64_t used = 0;  // keep track of used bytes
 };
 
 #endif //MILLISCALE_RING_H
