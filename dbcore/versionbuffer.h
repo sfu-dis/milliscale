@@ -14,7 +14,7 @@ public:
     {
     }
 
-    bool allocate(uint64_t size)
+    void* allocate(size_t size)
     {
         auto result = ringbuffer_.try_reserve(size);
         // result is nullptr if we have no space; must evict
@@ -29,7 +29,7 @@ public:
             result = ringbuffer_.try_reserve(size);
         }
 
-        return true;
+        return result;
     }
 
 private:
