@@ -30,7 +30,7 @@ public:
             auto* first_obj = static_cast<ermia::Object*>(first_element);
             auto* tuple = reinterpret_cast<ermia::dbtuple*>(first_obj->GetPayload());
             uint64_t bytes = ermia::align_up(sizeof(ermia::Object) + sizeof(ermia::dbtuple) + tuple->size);
-            ringbuffer_.evict(bytes);
+            if (!ringbuffer_.evict(bytes)) return nullptr;
             result = ringbuffer_.try_reserve(size);
         }
 

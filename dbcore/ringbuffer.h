@@ -5,7 +5,7 @@
 class RingBuffer {
 public:
     RingBuffer()
-        : pointer(nullptr), head(0), tail(0), capacity_(0)
+        : pointer(nullptr), head(0), tail(0), capacity_(0), wrap_around(0)
     {
     }
 
@@ -18,9 +18,13 @@ public:
     {
         // Note that, reserve really doesn't 'reserve' anything. It just tells us where we can put our version
         // by giving us an address
+
+        if (!pointer || size == 0 || size > capacity_) return nullptr;  // invalid sizes
+        if (used != 0 && head == tail) return nullptr;  // full ring buffer, evict first
+
         const uint64_t current_tail = tail;
         uint64_t limit = (tail < head) ? head : capacity_;
-        if (tail + size < limit)
+        if (size <= limit - tail)  // subtract to avoid overflow, and <= allows exact fit
         {
             // then we are good to allocate
             tail += size;
@@ -32,9 +36,7 @@ public:
             // we may need to pad and then evict
             // We want the caller to evict something. Let's check to see if they already have
 
-            if (head == tail) return nullptr; // full ring buffer; evict first
-
-            if (head > size)
+            if (tail >= head && size <= head)
             {
                 // Since we wrap the head, we can assume that it tells us how much space is left behind by eviction
                 // So if head > size, then we have enough space in front of head for our new object
@@ -57,6 +59,11 @@ public:
         // to make room for size given,
         // then we evict both whole versions rather than one version and a half of another
 
+        if (!pointer || size == 0 || size > used) return nullptr;
+
+        const uint64_t end = (head < tail) ? tail : wrap_around;
+        if (size > end - head) return nullptr;
+
         const uint64_t old_head = head;
         head += size;
         if (head == wrap_around || head == capacity_) {
@@ -65,6 +72,10 @@ public:
         }
 
         used -= size;
+        if (used == 0) {
+            head = tail = 0;
+            wrap_around = capacity_;
+        }
         return pointer + old_head;
     }
 
