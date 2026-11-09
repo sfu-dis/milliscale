@@ -21,6 +21,9 @@ public:
         if (size == 0 || size > VERSION_BUFFER_CAPACITY) return nullptr;
         auto result = ringbuffer_.try_reserve(size);
         // result is nullptr if we have no space; must evict
+
+        /*
+        // TODO: remove; Temporary version should not evict so we can test pathway
         while (!result)
         {
             auto* first_element = ringbuffer_.peek_front();
@@ -33,7 +36,7 @@ public:
             if (!ringbuffer_.evict(bytes)) return nullptr;
             result = ringbuffer_.try_reserve(size);
         }
-
+        */
         return result;
     }
 

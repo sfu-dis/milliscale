@@ -1,5 +1,8 @@
+#include <memory.h>
 #include "sm-alloc.h"
 #include "sm-object.h"
+
+#include "versionbuffer.h"
 #include "../tuple.h"
 #include "../engine.h"
 
@@ -106,7 +109,30 @@ fat_ptr Object::Create(const varstr *tuple_value) {
   size_t alloc_sz = align_up(sizeof(dbtuple) + sizeof(Object) + data_sz);
 
   // Allocate the space
-  Object *obj = (Object *)MM::allocate(alloc_sz);
+  //Object *obj = (Object *)MM::allocate(alloc_sz);
+
+  // Unique ptr here handles automatic cleanup. Also when it is freed (automatically), it just frees the VB
+  // the memory pointed to by the VB is not touched, and thus all pointers are valid
+  thread_local std::unique_ptr<VersionBuffer> buffer;
+  LOG(INFO) << "Using VersionBuffer";
+  if (!buffer)
+  {
+    // current thread has not initialized buffer
+    char* memory = (char*)MM::allocate_onnode(VERSION_BUFFER_CAPACITY);
+    LOG(INFO) << "Initialized thread's version buffer at "
+          << static_cast<void*>(memory);
+    buffer = std::make_unique<VersionBuffer>(memory);
+  }
+
+  Object *obj = static_cast<Object*>(buffer->allocate(alloc_sz));
+  if (!obj)
+  {
+    // Need a new backing region
+    LOG(INFO) << "New backing region";
+    char* memory = (char*)MM::allocate_onnode(VERSION_BUFFER_CAPACITY);
+    buffer = std::make_unique<VersionBuffer>(memory);
+    obj = static_cast<Object*>(buffer->allocate(alloc_sz));
+  }
 
   return InPlaceCreate(obj, tuple_value);
 }

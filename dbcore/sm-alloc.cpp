@@ -42,7 +42,7 @@ void prepare_node_memory() {
       numa_set_preferred(i);
       node_memory[i] = (char *)mmap(
           nullptr, config::node_memory_gb * config::GB, PROT_READ | PROT_WRITE,
-          MAP_ANONYMOUS | MAP_PRIVATE | MAP_HUGETLB | MAP_POPULATE, -1, 0);
+          MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE, -1, 0);
       THROW_IF(node_memory[i] == nullptr or node_memory[i] == MAP_FAILED,
                os_error, errno, "Unable to allocate huge pages");
       ALWAYS_ASSERT(node_memory[i]);
